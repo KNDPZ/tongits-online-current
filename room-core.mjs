@@ -190,6 +190,7 @@ export function lobbyView(room, token) {
     isPrivate: room.isPrivate,
     youAreHost: token === room.hostToken,
     yourSeat: seatIndexOf(room, token),
+    invite: token === room.hostToken ? room.inviteToken : undefined,
     seats: room.seats.map((s) =>
       s ? { name: s.name, isAI: s.isAI, connected: s.connected, busted: s.bustedOut, empty: false }
         : { empty: true }
