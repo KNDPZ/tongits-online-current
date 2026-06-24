@@ -452,7 +452,7 @@ export function viewFor(state, viewerId) {
   const idx = byId(state, viewerId);
   const r = state.round;
   const players = state.players.map((p) => ({
-    id: p.id, name: p.name, isAI: p.isAI, money: p.money, rec: p.rec, connected: p.connected,
+    name: p.name, isAI: p.isAI, money: p.money, rec: p.rec, connected: p.connected,
   }));
   if (!r.active && !r.over) {
     return { version: state.version, ante: state.ante, players, round: { phase: "idle" } };
