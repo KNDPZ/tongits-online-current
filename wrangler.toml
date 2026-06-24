@@ -1,0 +1,17 @@
+name = "tongits"
+main = "worker.mjs"
+compatibility_date = "2025-09-01"
+
+# Serve the game client (put index.html etc. in ./public)
+[assets]
+directory = "./public"
+binding = "ASSETS"
+
+# One Durable Object class per room. SQLite-backed = available on the FREE plan.
+[[durable_objects.bindings]]
+name = "ROOMS"
+class_name = "Room"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Room"]
