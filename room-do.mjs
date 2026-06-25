@@ -7,8 +7,8 @@
 // ============================================================================
 import * as RC from "./room-core.mjs";
 
-const AI_DELAY_MS = 1200;     // pacing between AI moves (UX)
-const DISCONNECT_GRACE_MS = 30000; // before a vanished human is AI'd
+// Turn lengths come from room-core (AI 8s, human 20s). The Durable Object
+// enforces them with a single alarm set to the current turn's deadline.
 
 export class Room {
   constructor(state, env) {
@@ -65,9 +65,9 @@ export class Room {
         if (body.token !== this.room.hostToken) return json({ error: "only the host can start" }, 403);
         const res = RC.startMatch(this.room, { seed: cryptoSeed() });
         if (!res.ok) return json({ error: res.error }, 400);
+        await this.armTurn();
         await this.save();
         this.broadcast();
-        this.scheduleIfAI();
         return json({ ok: true });
       }
       case "next": {
@@ -75,9 +75,9 @@ export class Room {
         if (body.token !== this.room.hostToken) return json({ error: "only the host can deal" }, 403);
         const res = RC.nextRound(this.room);
         if (!res.ok) return json({ error: res.error }, 400);
+        await this.armTurn();
         await this.save();
         this.broadcast();
-        this.scheduleIfAI();
         return json({ ok: true });
       }
       case "state": {
@@ -118,19 +118,18 @@ export class Room {
 
     if (data.t === "move") {
       const res = RC.humanMove(this.room, token, data.move);
-      await this.save();
-      if (!res.ok) { wsSend(ws, { t: "error", error: res.error }); this.sendTo(token); }
-      else { this.broadcast(); this.scheduleIfAI(); }
+      if (!res.ok) { await this.save(); wsSend(ws, { t: "error", error: res.error }); this.sendTo(token); }
+      else { await this.armTurn(); await this.save(); this.broadcast(); }
     } else if (data.t === "start") {
       if (token === this.room.hostToken) {
         const res = RC.startMatch(this.room, { seed: cryptoSeed() });
-        if (res.ok) { await this.save(); this.broadcast(); this.scheduleIfAI(); }
+        if (res.ok) { await this.armTurn(); await this.save(); this.broadcast(); }
         else wsSend(ws, { t: "error", error: res.error });
       }
     } else if (data.t === "next") {
       if (token === this.room.hostToken) {
         const res = RC.nextRound(this.room);
-        if (res.ok) { await this.save(); this.broadcast(); this.scheduleIfAI(); }
+        if (res.ok) { await this.armTurn(); await this.save(); this.broadcast(); }
         else wsSend(ws, { t: "error", error: res.error });
       }
     } else if (data.t === "chat") {
@@ -154,39 +153,45 @@ export class Room {
     RC.setConnected(this.room, token, false);
     await this.save();
     this.broadcast();
-    // if it's this player's turn mid-game, give them a grace window then AI them
-    if (this.room.status === "playing") {
-      const cur = this.room.match.round.currentIdx;
-      if (this.room.match.players[cur].id === token)
-        this.state.storage.setAlarm(Date.now() + DISCONNECT_GRACE_MS);
-      else this.scheduleIfAI();
-    }
+    // No special handling needed: if it's their turn, the turn clock will
+    // auto-play the minimum legal move when it expires.
   }
 
   async alarm() {
     await this.load();
     if (!this.room || this.room.status !== "playing") return;
-    const m = this.room.match;
-    const cur = m.round.currentIdx;
-    const p = m.players[cur];
-    if (p.isAI) {
-      RC.stepAIOnce(this.room);
-      await this.save();
-      this.broadcast();
-    } else if (!this.room.seats[cur].connected) {
-      // grace expired and still gone -> hand the seat to AI so others continue
-      RC.convertSeatToAI(this.room, cur, this.room.seats[cur].name + " (AI)");
-      await this.save();
-      this.broadcast();
-    } else {
-      return; // a connected human's turn; wait for them
+    const now = Date.now();
+    // Defensive: if a newer move pushed the deadline out, re-arm and wait.
+    if (this.room.turnDeadline && now < this.room.turnDeadline - 250) {
+      await this.state.storage.setAlarm(this.room.turnDeadline);
+      return;
     }
-    this.scheduleIfAI();
+    const m = this.room.match;
+    if (RC.currentIsAI(this.room)) {
+      // AI "thinks" for the turn length, then plays its whole turn at once.
+      const start = m.round.currentIdx;
+      let guard = 0;
+      while (this.room.status === "playing" && m.round.currentIdx === start && guard++ < 40) {
+        if (!RC.stepAIOnce(this.room).stepped) break;
+      }
+    } else {
+      // Human ran out of time -> auto-play the minimum legal move.
+      RC.autoPlay(this.room);
+    }
+    await this.armTurn();
+    await this.save();
+    this.broadcast();
   }
 
-  scheduleIfAI() {
-    if (this.room && this.room.status === "playing" && RC.currentIsAI(this.room))
-      this.state.storage.setAlarm(Date.now() + AI_DELAY_MS);
+  // Set the current turn's deadline and a single alarm to enforce it.
+  async armTurn() {
+    if (!this.room || this.room.status !== "playing") {
+      this.room && (this.room.turnDeadline = null);
+      await this.state.storage.deleteAlarm().catch(() => {});
+      return;
+    }
+    this.room.turnDeadline = Date.now() + RC.turnMsFor(this.room);
+    await this.state.storage.setAlarm(this.room.turnDeadline);
   }
 
   // ---- send helpers ----
