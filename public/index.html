@@ -48,6 +48,7 @@
   button.block{width:100%;margin-top:10px;padding:13px;}
 
   .main{flex:1 1 auto;min-height:0;display:grid;grid-template-columns:206px minmax(0,1fr) 312px;gap:12px;padding:0 14px 14px;}
+  body:not(.in-game) .main{display:none;}
   .left,.center,.right{min-height:0;}
   .left{display:flex;flex-direction:column;}
   .center{display:flex;flex-direction:column;overflow:hidden;}
@@ -448,7 +449,8 @@ async function doJoin(code,password,invite){
 $("startGo").onclick=()=>send({t:"start"});
 $("leaveLobby").onclick=leave;$("leaveBtn").onclick=leave;
 $("copyInvite").onclick=()=>{$("inviteLink").select();navigator.clipboard&&navigator.clipboard.writeText($("inviteLink").value);toast("Invite link copied");};
-function leave(){try{ws&&ws.close();}catch(e){}ws=null;clearTimeout(reconnectTimer);stopTimer();view=null;groups=[];looseOrder=[];armedId=null;discardPick=null;
+function leave(){try{ws&&ws.close();}catch(e){}ws=null;clearTimeout(reconnectTimer);stopTimer();view=null;groups=[];looseOrder=[];armedId=null;discardPick=null;prevHandIds=[];chatLines=[];renderChat();
+  document.body.classList.remove("in-game");
   ["hRoom","hPot","hMoney","leaveBtn"].forEach(id=>$(id).style.display="none");history.replaceState({},"",location.pathname);showPre("p-home");}
 
 /* ---------- networking ---------- */
@@ -508,8 +510,9 @@ function removeFromModel(id){groups=groups.map(g=>g.filter(x=>x!==id)).filter(g=
 
 /* ---------- render ---------- */
 function render(){
-  if(!view)return;
-  if(view.type==="lobby"){renderLobby(view);return;}
+  if(!view){document.body.classList.remove("in-game");return;}
+  if(view.type==="lobby"){document.body.classList.remove("in-game");renderLobby(view);return;}
+  document.body.classList.add("in-game");
   hidePre();renderGame(view);
 }
 function renderLobby(v){
