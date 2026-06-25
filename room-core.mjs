@@ -21,8 +21,16 @@ function chooseAIName(used, rnd = Math.random) {
   return pool[Math.floor(rnd() * pool.length)];
 }
 
+// Turn clock (enforced server-side by the Durable Object via alarms).
+export const HUMAN_TURN_MS = 20000;
+export const AI_TURN_MS = 8000;
+
 function seat(token, name, isAI) {
-  return { token, name, isAI: !!isAI, connected: false, bustedOut: false };
+  return { token, name, isAI: !!isAI, connected: false, bustedOut: false, games: 0 };
+}
+
+export function turnMsFor(room) {
+  return currentIsAI(room) ? AI_TURN_MS : HUMAN_TURN_MS;
 }
 
 export function createRoom(opts) {
@@ -156,7 +164,7 @@ export function humanMove(room, token, move) {
   if (idx !== m.round.currentIdx) return { ok: false, error: "not your turn" };
   if (m.players[idx].isAI) return { ok: false, error: "seat is AI-controlled" };
   const res = E.applyMove(m, token, move);
-  if (res.ok && m.round.over) room.status = "over";
+  if (res.ok && m.round.over) finishRound(room);
   return res;
 }
 
@@ -171,8 +179,38 @@ export function stepAIOnce(room) {
   if (!mv) return { stepped: false };
   const res = E.applyMove(m, p.id, mv);
   if (!res.ok) return { stepped: false, error: res.error };
-  if (m.round.over) room.status = "over";
+  if (m.round.over) finishRound(room);
   return { stepped: true, over: m.round.over, by: cur, move: mv };
+}
+
+// AFK / timeout auto-play: the minimum legal turn — draw from stock, then
+// discard the lowest-value card. Never melds or calls on the player's behalf.
+export function autoPlay(room) {
+  if (room.status !== "playing" || !room.match) return { ok: false };
+  const m = room.match;
+  const idx = m.round.currentIdx;
+  const id = m.players[idx].id;
+  if (m.round.phase === "draw") {
+    const dr = E.applyMove(m, id, { type: "draw" });
+    if (!dr.ok && m.round.over) { finishRound(room); return { ok: true, auto: true }; }
+  }
+  if (!m.round.over && m.round.phase === "play") {
+    const low = lowestCard(m.round.hands[idx]);
+    if (low) E.applyMove(m, id, { type: "discard", card: E.cardId(low) });
+  }
+  if (m.round.over) finishRound(room);
+  return { ok: true, auto: true, by: idx };
+}
+
+function lowestCard(hand) {
+  return hand.slice().sort((a, b) => E.cardPoints(a) - E.cardPoints(b))[0] || null;
+}
+
+// Increment per-room games for every seat exactly once when a round resolves.
+function finishRound(room) {
+  if (room.status === "over") return;
+  room.status = "over";
+  room.seats.forEach((s) => { if (s) s.games = (s.games || 0) + 1; });
 }
 
 export function currentIsAI(room) {
@@ -205,7 +243,19 @@ export function viewForToken(room, token) {
   v.roomId = room.roomId;
   v.status = room.status;
   v.youAreHost = token === room.hostToken;
-  v.seats = room.seats.map((s) => ({ name: s.name, isAI: s.isAI, connected: s.connected, busted: s.bustedOut }));
+  v.seats = room.seats.map((s) => ({
+    name: s.name, isAI: s.isAI, connected: s.connected, busted: s.bustedOut, games: s.games || 0,
+  }));
+  v.log = room.match.log.slice(-40);
+  // turn clock (room.turnDeadline is maintained by the Durable Object)
+  if (room.status === "playing" && room.turnDeadline) {
+    v.turn = {
+      msLeft: Math.max(0, room.turnDeadline - Date.now()),
+      totalMs: currentIsAI(room) ? AI_TURN_MS : HUMAN_TURN_MS,
+      isAI: currentIsAI(room),
+      idx: room.match.round.currentIdx,
+    };
+  }
   return v;
 }
 
