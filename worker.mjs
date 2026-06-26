@@ -8,6 +8,7 @@
 // backed by a single Lobby DO; the per-room plumbing here already works.
 // ============================================================================
 export { Room } from "./room-do.mjs";
+export { Lobby } from "./lobby-do.mjs";
 
 const ROOM_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // no ambiguous chars
 
@@ -45,6 +46,12 @@ export default {
         const roomId = up(url.searchParams.get("room"));
         if (!roomId) return cors(json({ error: "missing room" }, 400));
         return cors(await roomStub(env, roomId).fetch(rewrite(request, url, "/state")));
+      }
+      if (action === "rooms") {
+        if (!env.LOBBY) return cors(json({ rooms: [] }));
+        const id = env.LOBBY.idFromName("global");
+        const u = new URL(url); u.pathname = "/list";
+        return cors(await env.LOBBY.get(id).fetch(new Request(u.toString())));
       }
       return cors(json({ error: "unknown api" }, 404));
     }
