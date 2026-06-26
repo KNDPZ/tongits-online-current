@@ -303,6 +303,16 @@
       <label style="display:flex;justify-content:space-between;align-items:center">Open tables <a href="#" id="refreshRooms" style="color:var(--gold);text-transform:none;letter-spacing:0">refresh</a></label>
       <div class="seats" id="roomList"><div class="hint" style="padding:6px 0">Looking for open tables…</div></div>
     </div>
+    <!-- Sponsored native banner — injected only on this home screen, never inside the live game -->
+    <div id="adHome" style="margin-top:18px">
+      <div style="font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:#7fa890;margin-bottom:6px;text-align:center">Sponsored</div>
+      <div style="background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.08);border-radius:12px;padding:10px;min-height:56px">
+        <div id="container-84a4fbc5dc618f2a2b2853dd0dc7f2c8"></div>
+      </div>
+    </div>
+    <div style="margin-top:14px;text-align:center">
+      <a href="https://www.effectivecpmnetwork.com/gewsjdqwyu?key=200631fc30b6b7891078cb00f25613f1" target="_blank" rel="noopener nofollow sponsored" style="color:#9fc4ad;font-size:12px;text-decoration:none">♥ Support the game</a>
+    </div>
   </div>
   <div id="p-create" style="display:none">
     <h2>Create a room</h2>
@@ -377,6 +387,9 @@
   <p id="overReason"></p>
   <table class="score-tbl" id="overTable"></table>
   <div id="overReveal"></div>
+  <div style="text-align:center;margin-top:10px">
+    <a href="https://www.effectivecpmnetwork.com/gewsjdqwyu?key=200631fc30b6b7891078cb00f25613f1" target="_blank" rel="noopener nofollow sponsored" style="color:#9fc4ad;font-size:12px;text-decoration:none">♥ Enjoying the game? Support it</a>
+  </div>
   <div class="modal-actions"><button class="ghost" id="overClose">Close</button><button id="overNew" class="good" style="display:none">Deal next round</button></div>
 </div></div>
 
@@ -430,8 +443,18 @@ function esc(s){return String(s).replace(/[<>&]/g,c=>({"<":"&lt;",">":"&gt;","&"
 
 /* ---------- pre-game screens ---------- */
 const preSections=["p-name","p-home","p-create","p-join","p-lobby"];
-function showPre(id){$("preScrim").classList.add("show");preSections.forEach(s=>$(s).style.display=s===id?"":"none");if(id==="p-home")startRoomPoll();}
+function showPre(id){$("preScrim").classList.add("show");preSections.forEach(s=>$(s).style.display=s===id?"":"none");if(id==="p-home"){startRoomPoll();ensureNativeAd();}}
 function hidePre(){$("preScrim").classList.remove("show");}
+let nativeAdLoaded=false;
+function ensureNativeAd(){
+  if(nativeAdLoaded)return;nativeAdLoaded=true;
+  try{
+    const s=document.createElement("script");
+    s.async=true;s.setAttribute("data-cfasync","false");
+    s.src="https://pl30050264.effectivecpmnetwork.com/84a4fbc5dc618f2a2b2853dd0dc7f2c8/invoke.js";
+    (document.getElementById("adHome")||document.body).appendChild(s);
+  }catch(e){}
+}
 const params=new URLSearchParams(location.search);
 const urlRoom=(params.get("room")||"").toUpperCase().replace(/[^A-Z0-9]/g,"");
 const urlInvite=params.get("invite")||"";
