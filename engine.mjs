@@ -193,6 +193,9 @@ export function startRound(state, dealerIdx) {
     active: true, over: false,
     dealerIdx, currentIdx: dealerIdx, phase: "play", // dealer plays first w/o drawing
     turnCount: 0, lastMeldTurn: -999, lastSapawTurn: -999, lastMover: null,
+    selfSapawTurn: state.players.map(() => -999),   // last turn this player laid off (sapaw)
+    meldSapawedTurn: state.players.map(() => -999),  // last turn someone laid off ONTO this player's meld
+    call: null,                                      // active draw/challenge, when phase==="challenge"
     pot, stock: deck, discard: [],
     hands, melds: state.players.map(() => []), hasMelded: state.players.map(() => false),
     result: null,
@@ -210,12 +213,14 @@ function findCard(hand, id) { return hand.find((c) => cardId(c) === id); }
 export function callViable(state, idx) {
   const r = state.round;
   if (!r.active || r.over) return false;
+  if (!r.hasMelded[idx]) return false;            // need at least one exposed meld
   const N = state.players.length;
-  return (
-    r.hasMelded[idx] &&
-    r.turnCount - r.lastMeldTurn >= N &&
-    r.turnCount - r.lastSapawTurn >= N
-  );
+  const prevTurn = r.turnCount - N;               // this player's previous turn number
+  // can't call if you laid off on a meld on your previous turn ...
+  if (r.selfSapawTurn[idx] >= prevTurn) return false;
+  // ... or if anyone laid off ONTO your meld since your previous turn
+  if (r.meldSapawedTurn[idx] >= prevTurn) return false;
+  return true;
 }
 
 function allHandCards(state, idx) { return state.round.hands[idx]; }
@@ -280,7 +285,63 @@ function settle(state, tongitsIdx, reason) {
     : `${state.players[winners[0]].name} wins $${payouts[winners[0]]} (${reason}).`);
 }
 
-// ---- the reducer -----------------------------------------------------------
+// ---- draw / challenge ------------------------------------------------------
+function beginCall(state, caller) {
+  const r = state.round;
+  const responders = [], autoFold = [];
+  state.players.forEach((_, i) => {
+    if (i === caller) return;
+    if (r.hasMelded[i]) responders.push(i);  // has a meld -> may challenge or fold
+    else autoFold.push(i);                   // no meld -> automatically folded (burned)
+  });
+  r.phase = "challenge";
+  r.call = { caller, pending: [...responders], responders, decisions: {}, order: [], autoFold };
+  state.version++;
+  logEvent(state, `${state.players[caller].name} called a draw — opponents with a meld may challenge or fold.`);
+  if (r.call.pending.length === 0) resolveCall(state);
+}
+
+function resolveCall(state) {
+  const r = state.round, c = r.call;
+  const counts = state.players.map((_, i) => handCounted(r.hands[i]));
+  const challengers = c.order.filter((i) => c.decisions[i] === "challenge");
+  const folders = c.order.filter((i) => c.decisions[i] === "fold");
+  const shown = [c.caller, ...challengers];
+  // pick the winner among those who showed: lowest count;
+  // tie -> a challenger beats the caller; tie among challengers -> the LAST to challenge wins.
+  const isChal = (i) => i !== c.caller;
+  const better = (a, b) => {
+    if (counts[a] !== counts[b]) return counts[a] < counts[b];
+    if (isChal(a) !== isChal(b)) return isChal(a);            // challenger over caller
+    if (isChal(a) && isChal(b)) return c.order.indexOf(a) > c.order.indexOf(b); // later challenger
+    return false;
+  };
+  let best = shown[0];
+  for (const i of shown) if (better(i, best)) best = i;
+  finishCall(state, { winner: best, caller: c.caller, challengers, folders, autoFold: c.autoFold, shown, counts });
+}
+
+function finishCall(state, info) {
+  const r = state.round;
+  const { winner, caller, challengers, folders, autoFold, shown, counts } = info;
+  const winners = [winner];
+  const pot = r.pot;
+  const payouts = {};
+  winners.forEach((w) => { state.players[w].money += pot; payouts[w] = pot; });
+  r.pot = 0;
+  state.players.forEach((p, i) => { if (i === winner) p.rec.w++; else p.rec.l++; });
+  r.over = true; r.active = false; r.phase = "over";
+  r.result = {
+    reason: "call", caller, winners, draw: false,
+    challengers, folders, autoFold, shown,
+    payouts, nextDealer: winner, emptied: false, counts,
+  };
+  state.version++;
+  logEvent(state, `${state.players[winner].name} wins the draw with the lowest count (${counts[winner]}).`);
+  r.call = null;
+}
+
+
 // move types:
 //   { type:"draw" }                              (stock)
 //   { type:"drawDiscard", cards:[id,...] }       (take top discard + meld)
@@ -293,6 +354,22 @@ export function applyMove(state, playerId, move) {
   if (!r.active || r.over) return fail("round not active");
   const idx = byId(state, playerId);
   if (idx < 0) return fail("unknown player");
+
+  // Challenge response: any pending responder may answer, not just the current player.
+  if (move && move.type === "respond") {
+    if (r.phase !== "challenge" || !r.call) return fail("no draw to answer");
+    if (!r.call.pending.includes(idx)) return fail("not yours to answer");
+    const dec = move.decision === "challenge" ? "challenge" : "fold";
+    r.call.decisions[idx] = dec;
+    r.call.order.push(idx);
+    r.call.pending = r.call.pending.filter((i) => i !== idx);
+    state.version++;
+    logEvent(state, `${state.players[idx].name} ${dec === "challenge" ? "challenged the draw" : "folded"}.`);
+    if (r.call.pending.length === 0) resolveCall(state);
+    return ok(state);
+  }
+
+  if (r.phase === "challenge") return fail("a draw is being answered");
   if (idx !== r.currentIdx) return fail("not your turn");
   const hand = handOf(state, idx);
 
@@ -300,8 +377,7 @@ export function applyMove(state, playerId, move) {
     case "call": {
       if (r.phase !== "draw") return fail("can only call before drawing");
       if (!callViable(state, idx)) return fail("call not available this turn");
-      logEvent(state, `${state.players[idx].name} called the round before drawing.`);
-      settle(state, null, "call");
+      beginCall(state, idx);
       return ok(state);
     }
     case "draw": {
@@ -365,6 +441,8 @@ export function applyMove(state, playerId, move) {
       state.round.hands[idx] = hand.filter((c) => cardId(c) !== cardId(card));
       meld.cards = sortHand(meld.cards.concat([card]));
       r.lastSapawTurn = r.turnCount;
+      r.selfSapawTurn[idx] = r.turnCount;        // you laid off this turn
+      r.meldSapawedTurn[owner] = r.turnCount;    // owner's meld got laid on
       state.version++;
       logEvent(state, `${state.players[idx].name} sapaw ${cardLabel(card)} onto ${state.players[owner].name}'s ${meld.type}.`);
       if (isWin(state, idx)) settle(state, idx, "tongits");
@@ -392,18 +470,24 @@ export function applyMove(state, playerId, move) {
 // ---- server-side AI: one legal move per call -------------------------------
 export function aiMove(state, idx) {
   const r = state.round;
+  // Answering a called draw — a responder acts even though it isn't their turn.
+  if (r.phase === "challenge") {
+    if (!r.call || !r.call.pending.includes(idx)) return null;
+    const pts = handCounted(r.hands[idx]);
+    return { type: "respond", decision: pts <= 12 ? "challenge" : "fold" };
+  }
   if (!r.active || r.over || r.currentIdx !== idx) return null;
   const hand = r.hands[idx];
   const N = state.players.length;
 
   if (r.phase === "draw") {
-    // 1) call before drawing if the table is quiet and we're ahead
+    // 1) call a draw before drawing only when our hand is genuinely low
     if (callViable(state, idx)) {
       const pts = handCounted(hand);
       const eligible = state.players.map((_, i) => i).filter((i) => r.hasMelded[i]);
       const lowest = Math.min(...eligible.map((i) => handCounted(r.hands[i])));
       const burnedOpp = state.players.some((_, i) => i !== idx && !r.hasMelded[i]);
-      if (pts <= lowest && (pts <= 15 || burnedOpp)) return { type: "call" };
+      if (pts <= lowest && (pts <= 8 || (burnedOpp && pts <= 14))) return { type: "call" };
     }
     // 2) take the discard if it completes a meld
     const top = r.discard[r.discard.length - 1];
@@ -473,11 +557,18 @@ export function viewFor(state, viewerId) {
       you: idx >= 0
         ? { idx, hand: sortHand(r.hands[idx]), counted: handCounted(r.hands[idx]), canCall: callViable(state, idx) }
         : null,
-      result: r.over ? r.result : null,
-      // full reveal only once the round is over (verification)
-      reveal: r.over
-        ? r.hands.map((h, i) => ({ idx: i, cards: sortHand(h), meldIds: [...meldExclusion(h)], counted: handCounted(h) }))
+      call: (r.phase === "challenge" && r.call)
+        ? {
+            caller: r.call.caller,
+            pending: r.call.pending.slice(),
+            decided: r.call.order.map((i) => ({ idx: i, decision: r.call.decisions[i] })),
+            autoFold: r.call.autoFold.slice(),
+            youRespond: idx >= 0 && r.call.pending.includes(idx),
+          }
         : null,
+      result: r.over ? r.result : null,
+      // reveal at round end; for a called draw, only the caller and challengers show.
+      reveal: r.over ? buildReveal(state, idx) : null,
     },
   };
 }
@@ -485,6 +576,7 @@ export function viewFor(state, viewerId) {
 // Light legal-move summary (handy for UI button states / debugging).
 export function legalMoves(state, idx) {
   const r = state.round;
+  if (r.phase === "challenge") return (r.call && r.call.pending.includes(idx)) ? ["respond"] : [];
   if (!r.active || r.over || r.currentIdx !== idx) return [];
   if (r.phase === "draw") {
     const out = ["draw"];
@@ -494,4 +586,17 @@ export function legalMoves(state, idx) {
     return out;
   }
   return ["meld", "sapaw", "discard"];
+}
+
+function buildReveal(state) {
+  const r = state.round, res = r.result;
+  if (res && res.reason === "call") {
+    const shown = new Set(res.shown);
+    return r.hands.map((h, i) => shown.has(i)
+      ? { idx: i, cards: sortHand(h), meldIds: [...meldExclusion(h)], counted: handCounted(h), shown: true,
+          caller: i === res.caller, challenger: res.challengers.includes(i) }
+      : { idx: i, cards: [], meldIds: [], counted: null, shown: false,
+          folded: res.folders.includes(i), burned: res.autoFold.includes(i) });
+  }
+  return r.hands.map((h, i) => ({ idx: i, cards: sortHand(h), meldIds: [...meldExclusion(h)], counted: handCounted(h), shown: true }));
 }
