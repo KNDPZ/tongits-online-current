@@ -8,6 +8,7 @@ import * as E from "./engine.mjs";
 
 export const HUMAN_TURN_MS = 20000;
 export const AI_TURN_MS = 8000;
+const RESPOND_MS = 20000; // time a human has to challenge/fold a called draw
 
 const AI_NAMES = [
   "Aling Nena","Mang Tonio","Kuya Boy","Ate Vi","Lolo Ben","Tita Baby",
@@ -174,13 +175,23 @@ export function currentIsAI(room) {
   if (room.status !== "playing" || !room.match) return false;
   return room.match.players[room.match.round.currentIdx].isAI;
 }
-export function turnMsFor(room) { return currentIsAI(room) ? AI_TURN_MS : HUMAN_TURN_MS; }
+export function inChallenge(room) { return !!(room.match && room.match.round.phase === "challenge"); }
+export function turnMsFor(room) {
+  if (inChallenge(room)) return RESPOND_MS;
+  return currentIsAI(room) ? AI_TURN_MS : HUMAN_TURN_MS;
+}
 function engIdxOfToken(room, token) { return room.roundOrder.indexOf(token); }
 
 export function humanMove(room, token, mv) {
   if (room.status !== "playing" || !room.match) return { ok: false, error: "not playing" };
   const idx = engIdxOfToken(room, token);
   if (idx < 0) return { ok: false, error: "you're spectating this round" };
+  // a challenge response can come from any pending responder, not just the current player
+  if (mv && mv.type === "respond") {
+    const res = E.applyMove(room.match, token, mv);
+    if (res.ok && room.match.round.over) finishRound(room);
+    return res;
+  }
   if (idx !== room.match.round.currentIdx) return { ok: false, error: "not your turn" };
   if (room.match.players[idx].isAI) return { ok: false, error: "AI seat" };
   const res = E.applyMove(room.match, token, mv);
@@ -189,14 +200,36 @@ export function humanMove(room, token, mv) {
 }
 export function stepAIOnce(room) {
   if (room.status !== "playing" || !room.match) return { stepped: false };
-  const cur = room.match.round.currentIdx;
+  const r = room.match.round;
+  if (r.phase === "challenge") {
+    if (!r.call) return { stepped: false };
+    const aiIdx = r.call.pending.find((i) => room.match.players[i].isAI);
+    if (aiIdx === undefined) return { stepped: false, waitingOnHuman: true };
+    const mv = E.aiMove(room.match, aiIdx);
+    if (!mv) return { stepped: false };
+    const res = E.applyMove(room.match, room.match.players[aiIdx].id, mv);
+    if (!res.ok) return { stepped: false, error: res.error };
+    if (room.match.round.over) finishRound(room);
+    return { stepped: true, over: room.match.round.over };
+  }
+  const cur = r.currentIdx;
   if (!room.match.players[cur].isAI) return { stepped: false, waitingOnHuman: true };
   const m = E.aiMove(room.match, cur);
   if (!m) return { stepped: false };
-  const r = E.applyMove(room.match, room.match.players[cur].id, m);
-  if (!r.ok) return { stepped: false, error: r.error };
+  const res = E.applyMove(room.match, room.match.players[cur].id, m);
+  if (!res.ok) return { stepped: false, error: res.error };
   if (room.match.round.over) finishRound(room);
   return { stepped: true, over: room.match.round.over };
+}
+// On responder timeout: fold everyone who hasn't answered (a safe default).
+export function autoFoldPending(room) {
+  if (!inChallenge(room)) return { ok: false };
+  const r = room.match.round;
+  for (const i of [...r.call.pending]) {
+    E.applyMove(room.match, room.match.players[i].id, { type: "respond", decision: "fold" });
+  }
+  if (room.match.round.over) finishRound(room);
+  return { ok: true };
 }
 export function autoPlay(room) {
   if (room.status !== "playing" || !room.match) return { ok: false };
