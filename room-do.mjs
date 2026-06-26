@@ -92,6 +92,11 @@ export class Room {
       const r = RC.nextRound(this.room, { seed: cryptoSeed() });
       if (r.ok) { await this.armTurn(); await this.save(); this.broadcast(); await this.publishLobby(); }
       else wsSend(ws, { t: "error", error: r.error });
+    } else if (d.t === "readyNext") {
+      const r = RC.readyNextUp(this.room, token);
+      if (r.ok && r.allReady) { const nr = RC.nextRound(this.room, { seed: cryptoSeed() }); if (nr.ok) await this.armTurn(); }
+      await this.save(); this.broadcast(); await this.publishLobby();
+      if (!r.ok) wsSend(ws, { t: "error", error: r.error });
     } else if (d.t === "leave") {
       await this.handleLeave(token);
     } else if (d.t === "chat") {
@@ -123,7 +128,6 @@ export class Room {
       return;
     }
     await this.armTurn(); await this.save(); this.broadcast(); await this.publishLobby();
-    if (res.dealNext) { this.room._dealNextAt = true; await this.save(); await this.state.storage.setAlarm(Date.now() + 3500); }
   }
 
   async alarm() {
