@@ -78,7 +78,7 @@ export class Room {
     if (d.t === "move") {
       const res = RC.humanMove(this.room, token, d.move);
       if (!res.ok) { await this.save(); wsSend(ws, { t: "error", error: res.error }); this.sendTo(token); }
-      else { await this.armTurn(); await this.save(); this.broadcast(); }
+      else { await this.resolvePhase(); await this.armTurn(); await this.save(); this.broadcast(); }
     } else if (d.t === "start" && host) {
       const r = RC.startMatch(this.room, { seed: cryptoSeed() });
       if (r.ok) { await this.armTurn(); await this.save(); this.broadcast(); await this.publishLobby(); }
@@ -139,9 +139,15 @@ export class Room {
     const now = Date.now();
     if (this.room.turnDeadline && now < this.room.turnDeadline - 250) { await this.state.storage.setAlarm(this.room.turnDeadline); return; }
     const m = this.room.match;
+    if (RC.inChallenge(this.room)) {
+      RC.autoFoldPending(this.room);                 // responders ran out of time -> fold
+      await this.armTurn(); await this.save(); this.broadcast(); await this.publishLobby();
+      return;
+    }
     if (RC.currentIsAI(this.room)) {
       const start = m.round.currentIdx; let g = 0;
       while (this.room.status === "playing" && m.round.currentIdx === start && g++ < 40) if (!RC.stepAIOnce(this.room).stepped) break;
+      await this.resolvePhase();                      // an AI may have called a draw
     } else {
       RC.autoPlay(this.room);
     }
@@ -152,6 +158,15 @@ export class Room {
     if (!this.room || this.room.status !== "playing") { if (this.room) this.room.turnDeadline = null; return; }
     this.room.turnDeadline = Date.now() + RC.turnMsFor(this.room);
     await this.state.storage.setAlarm(this.room.turnDeadline);
+  }
+
+  // During a called draw, answer all AI responders right away so only humans hold it up.
+  async resolvePhase() {
+    if (!this.room) return;
+    let g = 0;
+    while (RC.inChallenge(this.room) && g++ < 12) {
+      if (!RC.stepAIOnce(this.room).stepped) break;
+    }
   }
 
   async publishLobby() {
