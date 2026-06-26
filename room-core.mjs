@@ -1,268 +1,348 @@
 // ============================================================================
-// room-core.mjs — pure room logic (no Cloudflare runtime, no WebSockets).
-// Operates on a plain `room` object so it's fully testable in Node.
-// The Durable Object (room-do.mjs) is a thin adapter that calls into this.
+// room-core.mjs (v2) — pure room logic with a live roster.
+// A room is rebuilt into an engine "match" each round from whoever is seated,
+// so seats can empty and fill between rounds (open seats, spectators, duds).
+// No real economy: money/pot are cosmetic play-money; W/L/D + G are the stats.
 // ============================================================================
 import * as E from "./engine.mjs";
 
-const AI_NAMES = [
-  "Aling Nena", "Mang Tonio", "Kuya Boy", "Ate Vi", "Lolo Ben", "Tita Baby",
-  "Pareng Jun", "Mareng Susan", "Inting", "Dado", "Tisoy", "Kapitan",
-  "Aling Cora", "Mang Berto", "Bunso", "Idol",
-];
-export function pickAIName(used) {
-  const avail = AI_NAMES.filter((n) => !used.includes(n));
-  const pool = avail.length ? avail : AI_NAMES;
-  // caller passes an index for determinism in tests; default random
-  return pool;
-}
-function chooseAIName(used, rnd = Math.random) {
-  const pool = pickAIName(used);
-  return pool[Math.floor(rnd() * pool.length)];
-}
-
-// Turn clock (enforced server-side by the Durable Object via alarms).
 export const HUMAN_TURN_MS = 20000;
 export const AI_TURN_MS = 8000;
 
-function seat(token, name, isAI) {
-  return { token, name, isAI: !!isAI, connected: false, bustedOut: false, games: 0 };
+const AI_NAMES = [
+  "Aling Nena","Mang Tonio","Kuya Boy","Ate Vi","Lolo Ben","Tita Baby",
+  "Pareng Jun","Mareng Susan","Inting","Dado","Tisoy","Kapitan",
+  "Aling Cora","Mang Berto","Bunso","Idol",
+];
+export function pickAIName(used, rnd = Math.random) {
+  const pool = AI_NAMES.filter((n) => !used.includes(n));
+  const arr = pool.length ? pool : AI_NAMES;
+  return arr[Math.floor(rnd() * arr.length)];
 }
 
-export function turnMsFor(room) {
-  return currentIsAI(room) ? AI_TURN_MS : HUMAN_TURN_MS;
-}
-
+// ---- construction ----------------------------------------------------------
 export function createRoom(opts) {
   const {
     roomId, hostToken, hostName, capacity = 3,
     isPrivate = false, passwordHash = null, inviteToken,
     startMoney = 50, ante = 10,
   } = opts;
-  const seats = new Array(capacity).fill(null);
-  seats[0] = seat(hostToken, hostName, false);
-  return {
+  const room = {
     roomId, hostToken, capacity, isPrivate, passwordHash, inviteToken,
     startMoney, ante,
-    seats,
-    match: null,
-    status: "lobby", // lobby | playing | over | ended
-    dealerSeat: 0,
-    round: 0,
+    seats: new Array(capacity).fill(null),
+    players: {},               // token -> {name,isAI,money,rec,games,connected,spectator}
+    status: "lobby",           // lobby | playing | over | closed
+    ready: false, mode: null,  // mode: "1v1" | "openseat" | "full"
+    aiRoom: false,             // chose "fill with AI & start"
+    match: null, roundOrder: [], roundSeat: [],
+    dealerSeat: 0, turnDeadline: null, round: 0,
+    dud: false, dudReason: null,
     chat: [],
+  };
+  addPlayer(room, hostToken, hostName, false);
+  room.seats[0] = hostToken;
+  return room;
+}
+function addPlayer(room, token, name, isAI) {
+  room.players[token] = {
+    name: name || "Player", isAI: !!isAI,
+    money: room.startMoney, rec: { w: 0, l: 0, d: 0 }, games: 0,
+    connected: false, spectator: false,
   };
 }
 
-export function seatIndexOf(room, token) {
-  return room.seats.findIndex((s) => s && s.token === token);
-}
+// ---- seat helpers ----------------------------------------------------------
+export function seatIndexOf(room, token) { return room.seats.indexOf(token); }
+function occupiedSeats(room) { const o = []; room.seats.forEach((t, i) => { if (t) o.push(i); }); return o; }
+function humanTokens(room) { return room.seats.filter((t) => t && !room.players[t].isAI); }
+function firstEmpty(room) { return room.seats.indexOf(null); }
+function usedNames(room) { return Object.values(room.players).map((p) => p.name); }
 
-// Join (or reconnect). Returns { ok, seat, error, reconnected }.
-// `providedPasswordHash` is the SHA-256 of the attempt (the DO hashes it);
-// `invite` is a token from an invite link (bypasses password).
+// ---- join / reconnect ------------------------------------------------------
 export function joinRoom(room, { token, name, providedPasswordHash = null, invite = null }) {
-  const existing = seatIndexOf(room, token);
-  if (existing >= 0) {
-    room.seats[existing].connected = true;
-    if (name) room.seats[existing].name = room.seats[existing].isAI ? room.seats[existing].name : name;
-    return { ok: true, seat: existing, reconnected: true };
+  const at = seatIndexOf(room, token);
+  if (at >= 0) {
+    room.players[token].connected = true;
+    if (name && !room.players[token].isAI) room.players[token].name = name;
+    return { ok: true, seat: at, reconnected: true };
   }
-  if (room.status !== "lobby") return { ok: false, error: "game already in progress" };
-
+  if (room.status === "closed") return { ok: false, error: "room closed" };
   const inviteOk = invite && room.inviteToken && invite === room.inviteToken;
   if (!inviteOk && room.isPrivate) {
     if (!providedPasswordHash || providedPasswordHash !== room.passwordHash)
       return { ok: false, error: "wrong or missing password" };
   }
-  const free = room.seats.findIndex((s) => s === null);
-  if (free < 0) return { ok: false, error: "room is full" };
-  room.seats[free] = seat(token, name || "Player", false);
-  room.seats[free].connected = true;
-  return { ok: true, seat: free, reconnected: false };
+  const seat = firstEmpty(room);
+  if (seat < 0) return { ok: false, error: "room is full" };
+  addPlayer(room, token, name, false);
+  room.players[token].connected = true;
+  // joining a live game -> spectate until the next round is dealt
+  room.players[token].spectator = (room.status === "playing");
+  room.seats[seat] = token;
+  return { ok: true, seat, spectator: room.players[token].spectator };
 }
 
 export function setConnected(room, token, connected) {
-  const i = seatIndexOf(room, token);
-  if (i >= 0) room.seats[i].connected = connected;
-  return i;
+  if (room.players[token]) room.players[token].connected = connected;
+  return seatIndexOf(room, token);
 }
 
-// Convert a seat to AI (used when a disconnected human is replaced after grace,
-// or a busted human's seat continues so others can keep playing).
-export function convertSeatToAI(room, seatIdx, aiName) {
-  const s = room.seats[seatIdx];
-  if (!s) return;
-  s.isAI = true;
-  s.name = aiName || s.name;
-  if (room.match) {
-    room.match.players[seatIdx].isAI = true;
-    room.match.players[seatIdx].name = s.name;
+// ---- ready / auto-start ----------------------------------------------------
+export function setReady(room, token, mode) {
+  if (token !== room.hostToken) return { ok: false, error: "only the host" };
+  if (room.status !== "lobby") return { ok: false, error: "already started" };
+  if (room.capacity === 2) room.mode = "1v1";
+  else {
+    if (mode !== "openseat" && mode !== "full") return { ok: false, error: "choose an auto-start option" };
+    room.mode = mode;
   }
-}
-
-export function canStart(room) {
-  if (room.status !== "lobby") return false;
-  const humans = room.seats.filter((s) => s && !s.isAI).length;
-  return humans >= 1;
-}
-
-// Host starts: fill empty seats with AI, build the engine match, deal round 1.
-export function startMatch(room, { seed, rnd = Math.random, dealerSeat } = {}) {
-  if (!canStart(room)) return { ok: false, error: "cannot start yet" };
-  const used = room.seats.filter(Boolean).map((s) => s.name);
-  for (let i = 0; i < room.capacity; i++) {
-    if (!room.seats[i]) {
-      const nm = chooseAIName(used, rnd);
-      used.push(nm);
-      room.seats[i] = seat("ai:" + i, nm, true);
-    }
-  }
-  const players = room.seats.map((s) => ({ id: s.token, name: s.name, isAI: s.isAI }));
-  room.match = E.createMatch({ players, startMoney: room.startMoney, ante: room.ante, seed });
-  const dealer = Number.isInteger(dealerSeat) ? dealerSeat : Math.floor(rnd() * room.capacity);
-  room.dealerSeat = dealer;
-  E.startRound(room.match, dealer);
-  room.status = "playing";
-  room.round = 1;
+  room.ready = true; room.aiRoom = false;
   return { ok: true };
 }
+// Should a READY human room auto-start now?
+export function shouldAutoStart(room) {
+  if (!room.ready || room.status !== "lobby") return false;
+  const humans = humanTokens(room).length;
+  if (room.capacity === 2) return humans >= 2;
+  if (room.mode === "full") return humans >= 3;
+  if (room.mode === "openseat") return humans >= 2;   // start, keep a seat open
+  return false;
+}
 
-// Deal the next round after one ends. Handles antes/bust: busted AI seats are
-// re-bought with a new name; a busted human's seat is converted to AI so the
-// remaining players can keep going (policy placeholder — revisit for UX).
-export function nextRound(room, { rnd = Math.random } = {}) {
-  if (room.status !== "over") return { ok: false, error: "round not over" };
-  const m = room.match;
-  const used = room.seats.map((s) => s.name);
-  for (let i = 0; i < room.capacity; i++) {
-    const p = m.players[i];
-    if (p.money < room.ante) {
-      const nm = chooseAIName(used.filter((_, k) => k !== i), rnd);
-      used[i] = nm;
-      if (!room.seats[i].isAI) room.seats[i].bustedOut = true; // human busted
-      E.replaceSeat(m, i, nm);
-      convertSeatToAI(room, i, nm);
-    }
-  }
-  // choose a dealer that can play (a winner if possible, else any seat)
-  let dealer = m.round.result ? m.round.result.nextDealer : 0;
-  if (m.players[dealer].money < room.ante) dealer = m.players.findIndex((p) => p.money >= room.ante);
-  if (dealer < 0) { room.status = "ended"; return { ok: false, error: "no one can ante" }; }
-  E.startRound(m, dealer);
-  room.dealerSeat = dealer;
+// ---- building a round from the current seats -------------------------------
+export function dealRound(room, dealerSeatHint, seed, rnd = Math.random) {
+  const seats = occupiedSeats(room);
+  if (seats.length < 2) return { ok: false, error: "need 2 players" };
+  // everyone seated is now an active participant (spectators get dealt in)
+  seats.forEach((si) => { room.players[room.seats[si]].spectator = false; });
+  const tokens = seats.map((si) => room.seats[si]);
+  const defs = tokens.map((t) => ({ id: t, name: room.players[t].name, isAI: room.players[t].isAI }));
+  room.match = E.createMatch({ players: defs, startMoney: room.startMoney, ante: room.ante, seed });
+  // carry money/records across rounds (cosmetic); free rebuy if "broke"
+  room.match.players.forEach((p, k) => {
+    const sp = room.players[tokens[k]];
+    p.money = sp.money >= room.ante ? sp.money : room.startMoney;
+    p.rec = { ...sp.rec };
+  });
+  room.roundOrder = tokens;
+  room.roundSeat = seats;
+  let dealerEng = 0;
+  if (Number.isInteger(dealerSeatHint)) { const k = seats.indexOf(dealerSeatHint); if (k >= 0) dealerEng = k; }
+  else dealerEng = Math.floor(rnd() * seats.length);
+  room.dealerSeat = seats[dealerEng];
+  E.startRound(room.match, dealerEng);
   room.status = "playing";
+  room.dud = false; room.dudReason = null;
   room.round++;
   return { ok: true };
 }
 
-// A human (by token) submits a move. Returns engine {ok,error}.
-export function humanMove(room, token, move) {
-  if (room.status !== "playing" || !room.match) return { ok: false, error: "not playing" };
-  const m = room.match;
-  const idx = m.players.findIndex((p) => p.id === token);
-  if (idx < 0) return { ok: false, error: "not in this match" };
-  if (idx !== m.round.currentIdx) return { ok: false, error: "not your turn" };
-  if (m.players[idx].isAI) return { ok: false, error: "seat is AI-controlled" };
-  const res = E.applyMove(m, token, move);
-  if (res.ok && m.round.over) finishRound(room);
-  return res;
-}
-
-// Apply one AI move if it's an AI seat's turn. Returns {stepped, over, ...}.
-export function stepAIOnce(room) {
-  if (room.status !== "playing" || !room.match) return { stepped: false };
-  const m = room.match;
-  const cur = m.round.currentIdx;
-  const p = m.players[cur];
-  if (!p.isAI) return { stepped: false, waitingOnHuman: true };
-  const mv = E.aiMove(m, cur);
-  if (!mv) return { stepped: false };
-  const res = E.applyMove(m, p.id, mv);
-  if (!res.ok) return { stepped: false, error: res.error };
-  if (m.round.over) finishRound(room);
-  return { stepped: true, over: m.round.over, by: cur, move: mv };
-}
-
-// AFK / timeout auto-play: the minimum legal turn — draw from stock, then
-// discard the lowest-value card. Never melds or calls on the player's behalf.
-export function autoPlay(room) {
-  if (room.status !== "playing" || !room.match) return { ok: false };
-  const m = room.match;
-  const idx = m.round.currentIdx;
-  const id = m.players[idx].id;
-  if (m.round.phase === "draw") {
-    const dr = E.applyMove(m, id, { type: "draw" });
-    if (!dr.ok && m.round.over) { finishRound(room); return { ok: true, auto: true }; }
+// Host: instant game vs AI (fills empty seats with AI). Not listed publicly.
+export function startMatch(room, { seed, rnd = Math.random } = {}) {
+  if (room.status !== "lobby") return { ok: false, error: "already started" };
+  if (humanTokens(room).length < 1) return { ok: false, error: "need a player" };
+  room.aiRoom = true; room.ready = false;
+  for (let i = 0; i < room.capacity; i++) {
+    if (!room.seats[i]) {
+      const tok = "ai:" + i + ":" + Math.floor(rnd() * 1e6);
+      addPlayer(room, tok, pickAIName(usedNames(room), rnd), true);
+      room.seats[i] = tok;
+    }
   }
-  if (!m.round.over && m.round.phase === "play") {
-    const low = lowestCard(m.round.hands[idx]);
-    if (low) E.applyMove(m, id, { type: "discard", card: E.cardId(low) });
+  return dealRound(room, undefined, seed, rnd);
+}
+
+// Deal the next round from whoever is seated now.
+export function nextRound(room, { seed, rnd = Math.random } = {}) {
+  if (room.status !== "over") return { ok: false, error: "round not over" };
+  // AI rooms: refill any empty seats so they always play full
+  if (room.aiRoom) {
+    for (let i = 0; i < room.capacity; i++) if (!room.seats[i]) {
+      const tok = "ai:" + i + ":" + Math.floor(rnd() * 1e6);
+      addPlayer(room, tok, pickAIName(usedNames(room), rnd), true);
+      room.seats[i] = tok;
+    }
   }
-  if (m.round.over) finishRound(room);
-  return { ok: true, auto: true, by: idx };
+  if (occupiedSeats(room).length < 2) { room.status = "lobby"; return { ok: false, error: "not enough players" }; }
+  const hint = seatIndexOf(room, room._nextDealerToken) >= 0 ? seatIndexOf(room, room._nextDealerToken) : undefined;
+  return dealRound(room, hint, seed, rnd);
 }
 
-function lowestCard(hand) {
-  return hand.slice().sort((a, b) => E.cardPoints(a) - E.cardPoints(b))[0] || null;
-}
-
-// Increment per-room games for every seat exactly once when a round resolves.
-function finishRound(room) {
-  if (room.status === "over") return;
-  room.status = "over";
-  room.seats.forEach((s) => { if (s) s.games = (s.games || 0) + 1; });
-}
-
+// ---- moves -----------------------------------------------------------------
 export function currentIsAI(room) {
   if (room.status !== "playing" || !room.match) return false;
   return room.match.players[room.match.round.currentIdx].isAI;
+}
+export function turnMsFor(room) { return currentIsAI(room) ? AI_TURN_MS : HUMAN_TURN_MS; }
+function engIdxOfToken(room, token) { return room.roundOrder.indexOf(token); }
+
+export function humanMove(room, token, mv) {
+  if (room.status !== "playing" || !room.match) return { ok: false, error: "not playing" };
+  const idx = engIdxOfToken(room, token);
+  if (idx < 0) return { ok: false, error: "you're spectating this round" };
+  if (idx !== room.match.round.currentIdx) return { ok: false, error: "not your turn" };
+  if (room.match.players[idx].isAI) return { ok: false, error: "AI seat" };
+  const res = E.applyMove(room.match, token, mv);
+  if (res.ok && room.match.round.over) finishRound(room);
+  return res;
+}
+export function stepAIOnce(room) {
+  if (room.status !== "playing" || !room.match) return { stepped: false };
+  const cur = room.match.round.currentIdx;
+  if (!room.match.players[cur].isAI) return { stepped: false, waitingOnHuman: true };
+  const m = E.aiMove(room.match, cur);
+  if (!m) return { stepped: false };
+  const r = E.applyMove(room.match, room.match.players[cur].id, m);
+  if (!r.ok) return { stepped: false, error: r.error };
+  if (room.match.round.over) finishRound(room);
+  return { stepped: true, over: room.match.round.over };
+}
+export function autoPlay(room) {
+  if (room.status !== "playing" || !room.match) return { ok: false };
+  const idx = room.match.round.currentIdx;
+  const id = room.match.players[idx].id;
+  if (room.match.round.phase === "draw") E.applyMove(room.match, id, { type: "draw" });
+  if (!room.match.round.over && room.match.round.phase === "play") {
+    const low = room.match.round.hands[idx].slice().sort((a, b) => E.cardPoints(a) - E.cardPoints(b))[0];
+    if (low) E.applyMove(room.match, id, { type: "discard", card: E.cardId(low) });
+  }
+  if (room.match.round.over) finishRound(room);
+  return { ok: true };
+}
+function finishRound(room) {
+  if (room.status === "over") return;
+  room.status = "over";
+  // sync cosmetic money + records back to the persistent roster (skip if dud)
+  room.match.players.forEach((p, k) => {
+    const sp = room.players[room.roundOrder[k]];
+    if (!sp) return;
+    sp.money = p.money;
+    if (!room.dud) { sp.rec = { ...p.rec }; sp.games = (sp.games || 0) + 1; }
+  });
+  if (room.match.round.result && !room.dud)
+    room._nextDealerToken = room.roundOrder[room.match.round.result.nextDealer];
+}
+
+// ---- leaving (the heart of the lifecycle) ----------------------------------
+// Returns { left, dud, dudReason, closed, kick:[tokens], dealNext, becameAI }
+export function leaveRoom(room, token, { rnd = Math.random } = {}) {
+  const seat = seatIndexOf(room, token);
+  if (seat < 0) return { left: false };
+  const name = room.players[token] ? room.players[token].name : "A player";
+  const wasParticipant = room.status === "playing" && engIdxOfToken(room, token) >= 0;
+  const out = { left: true, dud: false, closed: false, kick: [], dealNext: false, becameAI: false, name };
+
+  if (room.status === "playing" && room.aiRoom) {
+    // AI room: replace the leaver's seat with AI and keep the round going
+    const aiName = pickAIName(usedNames(room), rnd);
+    const aiTok = "ai:" + seat + ":" + Math.floor(rnd() * 1e6);
+    delete room.players[token];
+    addPlayer(room, aiTok, aiName, true);
+    room.seats[seat] = aiTok;
+    if (wasParticipant) {            // hand the live engine seat to the AI
+      const ei = room.roundOrder.indexOf(token);
+      room.roundOrder[ei] = aiTok;
+      room.match.players[ei].id = aiTok;
+      room.match.players[ei].isAI = true;
+      room.match.players[ei].name = aiName;
+    }
+    out.becameAI = true;
+    if (humanTokens(room).length === 0) { room.status = "closed"; out.closed = true; }
+    return out;
+  }
+
+  // human room (or lobby): vacate the seat
+  room.seats[seat] = null;
+  delete room.players[token];
+  if (token === room.hostToken) {
+    const h = humanTokens(room)[0];
+    if (h) room.hostToken = h;
+  }
+  const humansLeft = humanTokens(room).length;
+
+  if (room.status === "playing" && wasParticipant) {
+    // the in-progress round no longer counts
+    room.dud = true; room.dudReason = `${name} left mid-game — this round doesn't count.`;
+    room.status = "over";
+    room._nextDealerToken = null;
+  }
+
+  if (humansLeft === 0) { room.status = "closed"; out.closed = true; return out; }
+  if (humansLeft === 1 && (room.status === "over" || room.status === "playing")) {
+    // can't play alone -> send the last human back to the lobby, close the room
+    out.dud = room.dud; out.dudReason = room.dudReason;
+    out.kick = humanTokens(room);
+    room.status = "closed"; out.closed = true;
+    return out;
+  }
+  // >=2 humans remain: surface the dud, and let the room deal the next round
+  out.dud = room.dud; out.dudReason = room.dudReason;
+  if (room.status === "over" && humansLeft >= 2) out.dealNext = true;
+  return out;
 }
 
 // ---- views -----------------------------------------------------------------
 export function lobbyView(room, token) {
   return {
     type: "lobby",
-    roomId: room.roomId,
-    status: room.status,
-    capacity: room.capacity,
-    isPrivate: room.isPrivate,
+    roomId: room.roomId, status: room.status, capacity: room.capacity,
+    isPrivate: room.isPrivate, ready: room.ready, mode: room.mode,
     youAreHost: token === room.hostToken,
     yourSeat: seatIndexOf(room, token),
     invite: token === room.hostToken ? room.inviteToken : undefined,
-    seats: room.seats.map((s) =>
-      s ? { name: s.name, isAI: s.isAI, connected: s.connected, busted: s.bustedOut, empty: false }
-        : { empty: true }
-    ),
+    dud: room.dud, dudReason: room.dudReason,
+    seats: room.seats.map((t) => t
+      ? { name: room.players[t].name, isAI: room.players[t].isAI, connected: room.players[t].connected, empty: false }
+      : { empty: true }),
   };
 }
 
+export function isSpectator(room, token) {
+  return room.status === "playing" && seatIndexOf(room, token) >= 0 && engIdxOfToken(room, token) < 0;
+}
+
 export function viewForToken(room, token) {
-  if (!room.match) return lobbyView(room, token);
+  if (!room.match || room.status === "lobby") return lobbyView(room, token);
   const v = E.viewFor(room.match, token);
   v.type = "game";
   v.roomId = room.roomId;
   v.status = room.status;
   v.youAreHost = token === room.hostToken;
-  v.seats = room.seats.map((s) => ({
-    name: s.name, isAI: s.isAI, connected: s.connected, busted: s.bustedOut, games: s.games || 0,
-  }));
+  v.spectating = isSpectator(room, token);
+  v.dud = room.dud; v.dudReason = room.dudReason;
+  v.openSeats = room.seats.filter((t) => t === null).length;
+  v.capacity = room.capacity;
+  // enrich each round participant with persistent G/rec; attach seat index
+  v.players = v.players.map((p, k) => {
+    const sp = room.players[room.roundOrder[k]] || {};
+    return { ...p, games: sp.games || 0, seat: room.roundSeat[k] };
+  });
   v.log = room.match.log.slice(-40);
-  // turn clock (room.turnDeadline is maintained by the Durable Object)
   if (room.status === "playing" && room.turnDeadline) {
-    v.turn = {
-      msLeft: Math.max(0, room.turnDeadline - Date.now()),
-      totalMs: currentIsAI(room) ? AI_TURN_MS : HUMAN_TURN_MS,
-      isAI: currentIsAI(room),
-      idx: room.match.round.currentIdx,
-    };
+    v.turn = { msLeft: Math.max(0, room.turnDeadline - Date.now()), totalMs: turnMsFor(room), idx: room.match.round.currentIdx };
   }
   return v;
 }
 
+// What the Lobby Directory should advertise (null = don't list).
+export function lobbyMeta(room) {
+  const open = room.seats.filter((t) => t === null).length;
+  const listed = room.ready && !room.isPrivate && room.status !== "closed" && open > 0;
+  if (!listed) return null;
+  return {
+    roomId: room.roomId,
+    type: room.capacity === 2 ? "1v1" : "1v2",
+    capacity: room.capacity,
+    players: room.capacity - open,
+    open,
+    inProgress: room.status === "playing" || room.status === "over",
+  };
+}
+
 export function addChat(room, token, text) {
-  const i = seatIndexOf(room, token);
-  const name = i >= 0 ? room.seats[i].name : "??";
-  const line = { name, text: String(text).slice(0, 200).replace(/[<>]/g, ""), at: Date.now() };
+  const p = room.players[token];
+  const line = { name: p ? p.name : "??", text: String(text).slice(0, 120).replace(/[<>]/g, ""), at: Date.now() };
   room.chat.push(line);
   if (room.chat.length > 100) room.chat.shift();
   return line;
