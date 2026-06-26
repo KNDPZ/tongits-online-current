@@ -1,40 +1,28 @@
 // ============================================================================
-// room-do.mjs — the Room Durable Object (Cloudflare runtime adapter).
-// All game logic lives in room-core/engine; this only does I/O:
-//   - WebSocket Hibernation (idle rooms cost nothing)
-//   - storage persistence of the room object
-//   - Alarms for AI move pacing and disconnect -> AI takeover
+// room-do.mjs (v2) — Room Durable Object. I/O only; logic lives in room-core.
+//   - WebSocket Hibernation; storage persistence
+//   - turn clock (alarm) + AFK auto-play
+//   - ready/auto-start, leave/open-seat/dud/kick, spectators
+//   - publishes its public listing to the Lobby Directory
 // ============================================================================
 import * as RC from "./room-core.mjs";
 
-// Turn lengths come from room-core (AI 8s, human 20s). The Durable Object
-// enforces them with a single alarm set to the current turn's deadline.
-
 export class Room {
   constructor(state, env) {
-    this.state = state;
-    this.env = env;
-    this.room = null;
-    // rebuild token->socket map from any hibernated sockets
+    this.state = state; this.env = env; this.room = null;
+    this.lobby = env.LOBBY ? env.LOBBY.get(env.LOBBY.idFromName("global")) : null;
     this.sockets = new Map();
     for (const ws of this.state.getWebSockets()) {
-      const att = safeAttach(ws);
-      if (att && att.token) this.sockets.set(att.token, ws);
+      const a = safeAttach(ws); if (a && a.token) this.sockets.set(a.token, ws);
     }
   }
-
-  async load() {
-    if (!this.room) this.room = (await this.state.storage.get("room")) || null;
-    return this.room;
-  }
+  async load() { if (!this.room) this.room = (await this.state.storage.get("room")) || null; return this.room; }
   async save() { if (this.room) await this.state.storage.put("room", this.room); }
 
   async fetch(request) {
     const url = new URL(request.url);
     const action = url.pathname.split("/").filter(Boolean).pop();
-
     if (action === "ws") return this.handleWs(request, url);
-
     const body = request.method === "POST" ? await request.json().catch(() => ({})) : {};
     await this.load();
 
@@ -45,188 +33,145 @@ export class Room {
         const inviteToken = randomId(14);
         this.room = RC.createRoom({
           roomId: body.roomId, hostToken: body.token, hostName: body.name || "Host",
-          capacity: clampCap(body.capacity), isPrivate: !!body.private,
-          passwordHash, inviteToken, startMoney: 50, ante: 10,
+          capacity: clampCap(body.capacity), isPrivate: !!body.private, passwordHash, inviteToken,
         });
         await this.save();
         return json({ ok: true, roomId: this.room.roomId, seat: 0, invite: inviteToken });
       }
       case "join": {
-        if (!this.room) return json({ error: "no such room" }, 404);
-        const providedPasswordHash = body.password ? await sha256hex(body.password) : null;
-        const r = RC.joinRoom(this.room, { token: body.token, name: body.name, providedPasswordHash, invite: body.invite });
+        if (!this.room || this.room.status === "closed") return json({ error: "no such room" }, 404);
+        const pph = body.password ? await sha256hex(body.password) : null;
+        const r = RC.joinRoom(this.room, { token: body.token, name: body.name, providedPasswordHash: pph, invite: body.invite });
         if (!r.ok) return json({ error: r.error }, 403);
-        await this.save();
-        this.broadcast();
-        return json({ ok: true, seat: r.seat, reconnected: !!r.reconnected, capacity: this.room.capacity });
+        if (RC.shouldAutoStart(this.room)) { RC.dealRound(this.room, undefined, cryptoSeed()); await this.armTurn(); }
+        await this.save(); this.broadcast(); await this.publishLobby();
+        return json({ ok: true, seat: r.seat, reconnected: !!r.reconnected, spectator: !!r.spectator, capacity: this.room.capacity });
       }
-      case "start": {
-        if (!this.room) return json({ error: "no such room" }, 404);
-        if (body.token !== this.room.hostToken) return json({ error: "only the host can start" }, 403);
-        const res = RC.startMatch(this.room, { seed: cryptoSeed() });
-        if (!res.ok) return json({ error: res.error }, 400);
-        await this.armTurn();
-        await this.save();
-        this.broadcast();
-        return json({ ok: true });
-      }
-      case "next": {
-        if (!this.room) return json({ error: "no such room" }, 404);
-        if (body.token !== this.room.hostToken) return json({ error: "only the host can deal" }, 403);
-        const res = RC.nextRound(this.room);
-        if (!res.ok) return json({ error: res.error }, 400);
-        await this.armTurn();
-        await this.save();
-        this.broadcast();
-        return json({ ok: true });
-      }
-      case "state": {
+      case "state":
         if (!this.room) return json({ error: "no such room" }, 404);
         return json(RC.viewForToken(this.room, url.searchParams.get("token")));
-      }
       default:
         return json({ error: "unknown action" }, 404);
     }
   }
 
   async handleWs(request, url) {
-    if (request.headers.get("Upgrade") !== "websocket")
-      return new Response("expected websocket", { status: 426 });
+    if (request.headers.get("Upgrade") !== "websocket") return new Response("expected websocket", { status: 426 });
     const token = url.searchParams.get("token");
     await this.load();
-    if (!this.room || RC.seatIndexOf(this.room, token) < 0)
-      return new Response("not seated in this room", { status: 403 });
-
-    const pair = new WebSocketPair();
-    const client = pair[0], server = pair[1];
-    this.state.acceptWebSocket(server);          // hibernation-aware
+    if (!this.room || RC.seatIndexOf(this.room, token) < 0) return new Response("not seated", { status: 403 });
+    const pair = new WebSocketPair(); const client = pair[0], server = pair[1];
+    this.state.acceptWebSocket(server);
     server.serializeAttachment({ token });
     this.sockets.set(token, server);
     RC.setConnected(this.room, token, true);
-    await this.save();
-    this.sendTo(token);
-    this.broadcast();
+    await this.save(); this.sendTo(token); this.broadcast();
     return new Response(null, { status: 101, webSocket: client });
   }
 
-  // ---- hibernation socket handlers ----
   async webSocketMessage(ws, raw) {
-    await this.load();
-    if (!this.room) return;
-    const att = safeAttach(ws); const token = att && att.token;
-    let data; try { data = JSON.parse(raw); } catch { return; }
+    await this.load(); if (!this.room) return;
+    const a = safeAttach(ws); const token = a && a.token;
+    let d; try { d = JSON.parse(raw); } catch { return; }
+    const host = token === this.room.hostToken;
 
-    if (data.t === "move") {
-      const res = RC.humanMove(this.room, token, data.move);
+    if (d.t === "move") {
+      const res = RC.humanMove(this.room, token, d.move);
       if (!res.ok) { await this.save(); wsSend(ws, { t: "error", error: res.error }); this.sendTo(token); }
       else { await this.armTurn(); await this.save(); this.broadcast(); }
-    } else if (data.t === "start") {
-      if (token === this.room.hostToken) {
-        const res = RC.startMatch(this.room, { seed: cryptoSeed() });
-        if (res.ok) { await this.armTurn(); await this.save(); this.broadcast(); }
-        else wsSend(ws, { t: "error", error: res.error });
-      }
-    } else if (data.t === "next") {
-      if (token === this.room.hostToken) {
-        const res = RC.nextRound(this.room);
-        if (res.ok) { await this.armTurn(); await this.save(); this.broadcast(); }
-        else wsSend(ws, { t: "error", error: res.error });
-      }
-    } else if (data.t === "chat") {
-      const line = RC.addChat(this.room, token, data.text || "");
-      await this.save();
+    } else if (d.t === "start" && host) {
+      const r = RC.startMatch(this.room, { seed: cryptoSeed() });
+      if (r.ok) { await this.armTurn(); await this.save(); this.broadcast(); await this.publishLobby(); }
+      else wsSend(ws, { t: "error", error: r.error });
+    } else if (d.t === "ready" && host) {
+      const r = RC.setReady(this.room, token, d.mode);
+      if (!r.ok) { wsSend(ws, { t: "error", error: r.error }); return; }
+      if (RC.shouldAutoStart(this.room)) { RC.dealRound(this.room, undefined, cryptoSeed()); await this.armTurn(); }
+      await this.save(); this.broadcast(); await this.publishLobby();
+    } else if (d.t === "next" && host) {
+      const r = RC.nextRound(this.room, { seed: cryptoSeed() });
+      if (r.ok) { await this.armTurn(); await this.save(); this.broadcast(); await this.publishLobby(); }
+      else wsSend(ws, { t: "error", error: r.error });
+    } else if (d.t === "leave") {
+      await this.handleLeave(token);
+    } else if (d.t === "chat") {
+      const line = RC.addChat(this.room, token, d.text || ""); await this.save();
       this.broadcastRaw({ t: "chat", line });
-    } else if (data.t === "sync") {
+    } else if (d.t === "sync") {
       this.sendTo(token);
     }
   }
 
-  async webSocketClose(ws) { await this.onGone(ws); }
-  async webSocketError(ws) { await this.onGone(ws); }
+  async webSocketClose(ws) { await this.handleGone(ws); }
+  async webSocketError(ws) { await this.handleGone(ws); }
+  async handleGone(ws) {
+    await this.load(); if (!this.room) return;
+    const a = safeAttach(ws); const token = a && a.token; if (!token) return;
+    // disconnect == leave (per current product decision)
+    await this.handleLeave(token);
+  }
 
-  async onGone(ws) {
-    await this.load();
-    if (!this.room) return;
-    const att = safeAttach(ws); const token = att && att.token;
-    if (!token) return;
+  async handleLeave(token) {
+    if (!this.room || RC.seatIndexOf(this.room, token) < 0) { this.sockets.delete(token); return; }
+    const res = RC.leaveRoom(this.room, token, { rnd: Math.random });
+    const lws = this.sockets.get(token);
+    if (lws) wsSend(lws, { t: "left" });
     this.sockets.delete(token);
-    RC.setConnected(this.room, token, false);
-    await this.save();
-    this.broadcast();
-    // No special handling needed: if it's their turn, the turn clock will
-    // auto-play the minimum legal move when it expires.
+    if (res.closed) {
+      for (const k of res.kick) { const w = this.sockets.get(k); if (w) wsSend(w, { t: "kicked", reason: res.dudReason || "Not enough players — back to the lobby." }); }
+      await this.save(); this.broadcast(); await this.publishLobby();   // meta null -> unpublished
+      return;
+    }
+    await this.armTurn(); await this.save(); this.broadcast(); await this.publishLobby();
+    if (res.dealNext) { this.room._dealNextAt = true; await this.save(); await this.state.storage.setAlarm(Date.now() + 3500); }
   }
 
   async alarm() {
-    await this.load();
-    if (!this.room || this.room.status !== "playing") return;
-    const now = Date.now();
-    // Defensive: if a newer move pushed the deadline out, re-arm and wait.
-    if (this.room.turnDeadline && now < this.room.turnDeadline - 250) {
-      await this.state.storage.setAlarm(this.room.turnDeadline);
+    await this.load(); if (!this.room) return;
+    if (this.room.status === "over" && this.room._dealNextAt) {
+      this.room._dealNextAt = false;
+      const r = RC.nextRound(this.room, { seed: cryptoSeed() });
+      if (r.ok) await this.armTurn();
+      await this.save(); this.broadcast(); await this.publishLobby();
       return;
     }
+    if (this.room.status !== "playing") return;
+    const now = Date.now();
+    if (this.room.turnDeadline && now < this.room.turnDeadline - 250) { await this.state.storage.setAlarm(this.room.turnDeadline); return; }
     const m = this.room.match;
     if (RC.currentIsAI(this.room)) {
-      // AI "thinks" for the turn length, then plays its whole turn at once.
-      const start = m.round.currentIdx;
-      let guard = 0;
-      while (this.room.status === "playing" && m.round.currentIdx === start && guard++ < 40) {
-        if (!RC.stepAIOnce(this.room).stepped) break;
-      }
+      const start = m.round.currentIdx; let g = 0;
+      while (this.room.status === "playing" && m.round.currentIdx === start && g++ < 40) if (!RC.stepAIOnce(this.room).stepped) break;
     } else {
-      // Human ran out of time -> auto-play the minimum legal move.
       RC.autoPlay(this.room);
     }
-    await this.armTurn();
-    await this.save();
-    this.broadcast();
+    await this.armTurn(); await this.save(); this.broadcast();
   }
 
-  // Set the current turn's deadline and a single alarm to enforce it.
   async armTurn() {
-    if (!this.room || this.room.status !== "playing") {
-      this.room && (this.room.turnDeadline = null);
-      await this.state.storage.deleteAlarm().catch(() => {});
-      return;
-    }
+    if (!this.room || this.room.status !== "playing") { if (this.room) this.room.turnDeadline = null; return; }
     this.room.turnDeadline = Date.now() + RC.turnMsFor(this.room);
     await this.state.storage.setAlarm(this.room.turnDeadline);
   }
 
-  // ---- send helpers ----
-  sendTo(token) {
-    const ws = this.sockets.get(token);
-    if (ws) wsSend(ws, { t: "state", view: RC.viewForToken(this.room, token) });
+  async publishLobby() {
+    if (!this.lobby || !this.room) return;
+    const meta = RC.lobbyMeta(this.room);
+    try {
+      if (meta) await this.lobby.fetch("https://l/publish", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ meta }) });
+      else await this.lobby.fetch("https://l/unpublish", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ roomId: this.room.roomId }) });
+    } catch (e) { /* lobby optional */ }
   }
-  broadcast() {
-    for (const ws of this.state.getWebSockets()) {
-      const att = safeAttach(ws); if (!att || !att.token) continue;
-      wsSend(ws, { t: "state", view: RC.viewForToken(this.room, att.token) });
-    }
-  }
-  broadcastRaw(obj) {
-    for (const ws of this.state.getWebSockets()) wsSend(ws, obj);
-  }
+
+  sendTo(token) { const ws = this.sockets.get(token); if (ws) wsSend(ws, { t: "state", view: RC.viewForToken(this.room, token) }); }
+  broadcast() { for (const ws of this.state.getWebSockets()) { const a = safeAttach(ws); if (!a || !a.token) continue; wsSend(ws, { t: "state", view: RC.viewForToken(this.room, a.token) }); } }
+  broadcastRaw(o) { for (const ws of this.state.getWebSockets()) wsSend(ws, o); }
 }
 
-// ---- helpers ---------------------------------------------------------------
 function safeAttach(ws) { try { return ws.deserializeAttachment(); } catch { return null; } }
-function wsSend(ws, obj) { try { ws.send(JSON.stringify(obj)); } catch { /* socket gone */ } }
+function wsSend(ws, o) { try { ws.send(JSON.stringify(o)); } catch {} }
 function clampCap(c) { c = c | 0; return c === 2 ? 2 : 3; }
-function json(obj, status = 200) {
-  return new Response(JSON.stringify(obj), {
-    status, headers: { "content-type": "application/json", "access-control-allow-origin": "*" },
-  });
-}
-function randomId(n) {
-  const a = new Uint8Array(n); crypto.getRandomValues(a);
-  return [...a].map((b) => "0123456789abcdefghijklmnopqrstuvwxyz"[b % 36]).join("");
-}
-function cryptoSeed() {
-  const a = new Uint32Array(1); crypto.getRandomValues(a); return a[0] | 0;
-}
-async function sha256hex(str) {
-  const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(str));
-  return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, "0")).join("");
-}
+function json(o, s = 200) { return new Response(JSON.stringify(o), { status: s, headers: { "content-type": "application/json", "access-control-allow-origin": "*" } }); }
+function randomId(n) { const a = new Uint8Array(n); crypto.getRandomValues(a); return [...a].map((b) => "0123456789abcdefghijklmnopqrstuvwxyz"[b % 36]).join(""); }
+function cryptoSeed() { const a = new Uint32Array(1); crypto.getRandomValues(a); return a[0] | 0; }
+async function sha256hex(s) { const b = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(s)); return [...new Uint8Array(b)].map((x) => x.toString(16).padStart(2, "0")).join(""); }
