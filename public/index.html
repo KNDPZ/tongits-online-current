@@ -692,6 +692,25 @@ function armedCanJoin(meld){if(armedId==null)return false;const c=cardById(armed
 function setBanner(html){$("statusLine").innerHTML=html;}
 function renderControls(v,myTurn){
   const r=v.round;const c=$("controls");c.innerHTML="";
+  // a draw has been called — challenge / fold phase
+  if(r.call){
+    const callerName=(v.players[r.call.caller]?v.players[r.call.caller].name:"A player");
+    if(r.call.youRespond){
+      const myPts=r.you?r.you.counted:0;
+      c.appendChild(mkBtn("Challenge","good",()=>respond("challenge")));
+      c.appendChild(mkBtn("Fold","danger",()=>respond("fold")));
+      const h=document.createElement("div");h.className="hint";
+      h.innerHTML=`<b>${esc(callerName)}</b> called a draw. Your hand counts <b>${myPts}</b>. <b>Challenge</b> if you can beat them, or <b>Fold</b> to bow out.`;c.appendChild(h);
+      setBanner(`<b>${esc(callerName)}</b> called a draw — challenge or fold.`);
+    }else{
+      const done=r.call.decided.length, total=done+r.call.pending.length;
+      const h=document.createElement("div");h.className="hint";
+      h.textContent=v.spectating?"A draw was called — watching the showdown.":(r.you&&r.you.idx===r.call.caller?"You called a draw. Waiting for opponents to challenge or fold…":"A draw was called. Waiting for opponents with melds to decide…");
+      c.appendChild(h);
+      setBanner(`Draw called by <b>${esc(callerName)}</b> — waiting on players (${done}/${total}).`);
+    }
+    return;
+  }
   if(v.spectating){setBanner("Spectating — you'll be dealt in next round.");const h=document.createElement("div");h.className="hint";h.textContent="You can watch the table and chat while you wait.";c.appendChild(h);return;}
   if(discardPick){const top=r.discard[r.discard.length-1];
     const chosen=myHandCards().filter(x=>discardPick.chosen.has(cardId(x)));
@@ -702,11 +721,11 @@ function renderControls(v,myTurn){
     setBanner(`Pick cards to meld with <b>${top?rl(top.r)+SUIT[top.s]:"the discard"}</b>.`);return;
   }
   const drawPhase=myTurn&&r.phase==="draw",playPhase=myTurn&&r.phase==="play";
-  const callBtn=mkBtn("Call (end round)","info",()=>move({type:"call"}));
+  const callBtn=mkBtn("Call a draw","info",()=>move({type:"call"}));
   callBtn.disabled=!(drawPhase&&r.you&&r.you.canCall);
   if(r.over)callBtn.title="Round over";else if(!myTurn)callBtn.title="Wait for your turn";
-  else if(r.phase!=="draw")callBtn.title="You already drew — can't call this turn";
-  else if(!(r.you&&r.you.canCall))callBtn.title="Lay a meld first, and wait for a quiet cycle";
+  else if(r.phase!=="draw")callBtn.title="You already drew — call at the start of a turn";
+  else if(!(r.you&&r.you.canCall))callBtn.title="Need an exposed meld; and you must wait a turn after any sapaw on (or by) you";
   c.appendChild(callBtn);
   const disc=mkBtn("Discard armed","danger",()=>{if(armedId)doDiscard(armedId);});
   disc.disabled=!(playPhase&&armedId!=null);disc.title=armedId==null?"Tap a card to arm it first":"Discard the armed card";
@@ -714,13 +733,14 @@ function renderControls(v,myTurn){
   const hint=document.createElement("div");hint.className="hint";
   if(r.over)hint.textContent="Round over.";
   else if(!myTurn)hint.textContent="You can rearrange and group your cards while you wait.";
-  else if(r.phase==="draw")hint.innerHTML="Draw from the pile or the glowing discard — or <b>Call</b> (before drawing) if the table's been quiet.";
+  else if(r.phase==="draw")hint.innerHTML="Draw a card — or <b>Call a draw</b> (before drawing) if you have a meld and a low hand.";
   else hint.innerHTML="Drag to group; tap a card then a glowing meld to <b>sapaw</b>; drag a card onto the discard to end your turn.";
   c.appendChild(hint);
   const afk=document.createElement("div");afk.className="afk";
   if(myTurn&&!r.over)afk.textContent="If your timer runs out, your lowest card is auto-discarded.";
   c.appendChild(afk);
 }
+function respond(decision){send({t:"move",move:{type:"respond",decision}});}
 function mkBtn(label,cls,fn){const b=document.createElement("button");if(cls)b.className=cls;b.textContent=label;b.onclick=fn;return b;}
 
 /* ---------- drag & tap ---------- */
@@ -781,18 +801,45 @@ function renderOver(v){const r=v.round;if(!r.over){$("overScrim").classList.remo
     $("overNew").style.display=v.youAreHost?"":"none";
     $("overScrim").classList.add("show");return;
   }
-  $("overTitle").textContent=res.reason==="tongits"?(res.emptied?"Tongits!":"Out on melds!"):(res.draw?"Draw":"Round over");
   const wn=res.winners.map(i=>v.players[i]?v.players[i].name:"?").join(" & ");
-  $("overReason").innerHTML=res.draw?`${esc(wn)} tie. Next dealer is chosen among them.`:`${esc(wn)} wins this round.`;
+  const isCall=res.reason==="call";
+  if(isCall){
+    const callerName=v.players[res.caller]?v.players[res.caller].name:"?";
+    $("overTitle").textContent="Draw called";
+    $("overReason").innerHTML=`<b>${esc(callerName)}</b> called a draw. <b>${esc(wn)}</b> wins with the lowest count.`;
+  }else{
+    $("overTitle").textContent=res.reason==="tongits"?(res.emptied?"Tongits!":"Out on melds!"):(res.draw?"Draw":"Round over");
+    $("overReason").innerHTML=res.draw?`${esc(wn)} tie. Next dealer is chosen among them.`:`${esc(wn)} wins this round.`;
+  }
+  const labelFor=(i)=>{
+    if(res.winners.includes(i))return isCall?"Win":(res.draw?"Draw":"Win");
+    if(isCall){
+      if((res.autoFold||[]).includes(i))return "Burned (no meld)";
+      if((res.folders||[]).includes(i))return "Folded";
+      if((res.challengers||[]).includes(i))return "Challenged — lost";
+      return "Lost";
+    }
+    return (!r.hasMelded[i])?"Burned":"Loss";
+  };
   let html="<tr><th>Player</th><th>Result</th></tr>";
-  v.players.forEach((p,i)=>{const w=res.winners.includes(i);const burned=!r.hasMelded[i];const cls=w?"win":(burned?"burned":"");
-    html+=`<tr class="${cls}"><td>${esc(p.name)}${w?" 👑":""}${r.dealerIdx===i?" 🃏":""}</td><td>${w?(res.draw?"Draw":"Win"):(burned?"Burned":"Loss")}</td></tr>`;});
+  v.players.forEach((p,i)=>{const w=res.winners.includes(i);
+    const dim=!w&&((isCall&&((res.autoFold||[]).includes(i)||(res.folders||[]).includes(i)))||(!isCall&&!r.hasMelded[i]));
+    const cls=w?"win":(dim?"burned":"");const isCaller=isCall&&res.caller===i;
+    html+=`<tr class="${cls}"><td>${esc(p.name)}${w?" 👑":""}${isCaller?" 📣":""}${r.dealerIdx===i?" 🃏":""}</td><td>${labelFor(i)}</td></tr>`;});
   $("overTable").innerHTML=html;
-  let rev=`<div class="reveal-wrap"><div class="reveal-title">Hands revealed</div>`;
-  (r.reveal||[]).forEach(row=>{const mids=new Set(row.meldIds);
-    let chips=row.cards.map(c=>`<span class="rcard ${mids.has(cardId(c))?'meldc':''} ${RED.has(c.s)?'red':'black'}">${rl(c.r)}${SUIT[c.s]}</span>`).join("");
-    if(!row.cards.length)chips=`<span class="rempty">— empty —</span>`;
-    rev+=`<div class="reveal-row"><div class="reveal-name">${esc(v.players[row.idx]?v.players[row.idx].name:"?")}</div><div class="reveal-cards">${chips}</div><div class="reveal-pts">${row.counted} pts</div></div>`;});
+  let rev=`<div class="reveal-wrap"><div class="reveal-title">${isCall?"Showdown — caller and challengers":"Hands revealed"}</div>`;
+  (r.reveal||[]).forEach(row=>{
+    const name=esc(v.players[row.idx]?v.players[row.idx].name:"?");
+    let chips,pts="";
+    if(row.shown===false){
+      chips=`<span class="rempty">${row.burned?"burned — hand hidden":"folded — hand hidden"}</span>`;
+    }else{
+      const mids=new Set(row.meldIds);
+      chips=row.cards.map(c=>`<span class="rcard ${mids.has(cardId(c))?'meldc':''} ${RED.has(c.s)?'red':'black'}">${rl(c.r)}${SUIT[c.s]}</span>`).join("");
+      if(!row.cards.length)chips=`<span class="rempty">— empty —</span>`;
+      pts=`${row.counted} pts`;
+    }
+    rev+=`<div class="reveal-row"><div class="reveal-name">${name}</div><div class="reveal-cards">${chips}</div><div class="reveal-pts">${pts}</div></div>`;});
   rev+=`<div class="reveal-legend" style="margin-top:8px;font-size:11px;color:#9fc4ad"><span class="rcard black">7♠</span> counts &middot; <span class="rcard meldc black">7♠</span> meld</div></div>`;
   $("overReveal").innerHTML=rev;
   $("overNew").style.display=v.youAreHost?"":"none";
