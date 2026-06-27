@@ -431,7 +431,6 @@ export function applyMove(state, playerId, move) {
     }
     case "sapaw": {
       if (r.phase !== "play") return fail("draw first");
-      if (!r.hasMelded[idx]) return fail("lay your own meld before sapaw");
       const card = findCard(hand, move.card);
       if (!card) return fail("card not in hand");
       const owner = move.owner, mIdx = move.meldIdx;
