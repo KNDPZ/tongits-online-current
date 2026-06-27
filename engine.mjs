@@ -506,7 +506,10 @@ export function aiMove(state, idx) {
     melds.sort((a, b) => sum(b.cards) - sum(a.cards));
     return { type: "meld", cards: melds[0].cards.map(cardId) };
   }
-  if (r.hasMelded[idx]) {
+  // sapaw: melded AIs lay off freely; a burned AI under threat (an opponent has an
+  // exposed meld) lays off to block the call and keep itself in the game
+  const oppHasMeld = state.players.some((_, i) => i !== idx && r.hasMelded[i]);
+  if (r.hasMelded[idx] || (!r.hasMelded[idx] && oppHasMeld)) {
     for (const card of hand) {
       for (let o = 0; o < N; o++) {
         for (let m = 0; m < r.melds[o].length; m++) {
