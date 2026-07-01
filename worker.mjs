@@ -26,6 +26,12 @@ export default {
       return roomStub(env, roomId).fetch(rewrite(request, url, "/ws"));
     }
 
+    // Global hub WebSocket (presence + world chat) -> Lobby DO
+    if (path === "/hub") {
+      if (!env.LOBBY) return new Response("no hub", { status: 503 });
+      return env.LOBBY.get(env.LOBBY.idFromName("global")).fetch(request);
+    }
+
     // Lobby/room API
     if (path.startsWith("/api/")) {
       const action = path.slice("/api/".length);
