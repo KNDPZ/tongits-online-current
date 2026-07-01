@@ -1,135 +1,103 @@
-# Tong-its Online
-
-Free, unranked, **online multiplayer Tong-its** (the Filipino three-player rummy),
-built to run entirely on Cloudflare's **free tier**. Server-authoritative, no
-accounts, no money, no ads — just open a room and play.
-
-**Live:** https://tongits.playy.online &nbsp;·&nbsp; mirror: https://vs.nullsec.online
-
-> Status: playable. Online lobby + full round rules are in. The newest update
-> reworks the **draw/challenge** mechanic to match real Tong-its.
-
+Tong-its Online
+Free, unranked, online multiplayer Tong-its (the Filipino three-player rummy),
+built to run entirely on Cloudflare's free tier. Server-authoritative, no
+accounts, no coins, no ranks — open a table and play, or find people in the lobby.
+Live: https://tongits.playy.online  ·  mirror: https://vs.nullsec.online
+> Status: playable and feature-rich. Core rules, the full draw/challenge
+> showdown, a real-time lobby with world chat and presence, mobile support, and
+> two card looks are all in. Newest work: the global lobby + world chat.
 ---
-
-## What it is
-
+What it is
 Tong-its is a 3-player rummy where you race to clear your hand into melds (sets
-and runs), "sapaw" (lay off) onto exposed melds, and either go out completely
-(**Tongits**) or **call a draw** and win the showdown on the lowest points. This
-project is a faithful online version of a single-player game, rebuilt so people
-can play each other in real time from a browser or phone.
-
+and runs), lay off (sapaw) onto exposed melds, and either go out completely
+(Tongits) or call a draw and win the showdown on the lowest points. This
+is a faithful online version of a single-player game, rebuilt so people can play
+each other in real time from a browser or phone — no installs.
 ---
-
-## How it's built
-
+How it's built
 Everything fits on Cloudflare's free plan: static assets for the client, one
-Worker as the front door, one **SQLite-backed Durable Object per room** (with
-WebSocket Hibernation, so idle rooms cost nothing), and a single global Lobby
-Durable Object that holds the public room list.
-
+Worker as the front door, one SQLite-backed Durable Object per room (game
+state, WebSocket Hibernation, turn timers), and a single global Lobby hub
+Durable Object that serves the room directory and real-time presence + world
+chat over WebSockets.
 ```
-browser ──HTTP /api/* ───────────┐
-        ──WS  /ws?room=&token= ──┼─▶ Worker ──▶ Room DO  (one per room: state, WS, timers)
-        ──static assets ─────────┘    │                     │
-                                      └──▶ Lobby DO  ◀───────┘ (publishes the public room list)
-                                                  │
-                            room-core.mjs (seats, lifecycle) ─▶ engine.mjs (pure rules)
+browser ─ HTTP /api/*  ───────────┐
+        ─ WS  /ws?room= (game) ───┼─▶ Worker ─▶ Room DO   (one per room)
+        ─ WS  /hub      (lobby) ──┤            │
+        ─ static assets ──────────┘            ▼
+                                   Lobby hub DO ◀── rooms publish here
+                                   (directory + presence + world chat)
 ```
-
-| file | role |
-|---|---|
-| `engine.mjs` | deterministic rules: moves, scoring, draw/challenge, AI, redacted views |
-| `room-core.mjs` | seats, join/leave, ready/lobby, AI stepping, per-player views |
-| `room-do.mjs` | the Room Durable Object — WebSockets, storage, turn timers/alarms |
-| `lobby-do.mjs` | the global Lobby Durable Object — public room directory |
-| `worker.mjs` | routes API + WebSocket traffic and serves the client |
-| `public/index.html` | the game client (the whole UI in one file) |
-| `wrangler.toml` | deploy config (DO bindings + static assets + migrations) |
-| `*.test.mjs` | Node test suites |
-
+file	role
+`engine.mjs`	deterministic rules: moves, scoring, draw/challenge, sapaw, AI, redacted views
+`room-core.mjs`	seats, join/leave, ready-up, lobby lifecycle, AI stepping, per-player views
+`room-do.mjs`	the Room Durable Object — game WebSockets, storage, turn timers
+`lobby-do.mjs`	the global hub — room directory + presence, unique names, world chat (WS)
+`worker.mjs`	routes API, game WebSockets, and the `/hub` lobby WebSocket; serves the client
+`public/index.html`	the whole game client (lobby + table) in one file
+`wrangler.toml`	deploy config (DO bindings, static assets, migrations)
+`*.test.mjs`	Node test suites
 ---
-
-## Current progress (done)
-
-- **Real-time multiplayer** — server-authoritative rooms over WebSockets; the
-  server owns the cards, so the client can't cheat.
-- **Public lobby** — a home-screen list of open rooms you can join with one tap
-  (labelled 1v1 for 2 seats, 1v2 for 3 seats), backed by a global Lobby DO.
-- **Ready / room setup** — a **Ready** button publishes your room to the lobby.
-  1v1 auto-starts when a second human joins; 3-player rooms pick between
-  *"start with an open seat"* and *"wait for the table to fill."*
-- **Fill with AI** — start instantly against bots in a private (unlisted) room.
-- **Room lifecycle** — leaving frees your seat for anyone; leaving mid-round
-  voids that round as a **dud** ("doesn't count"); when only one human is left
-  they're returned to the lobby; bot rooms backfill empty seats with AI.
-- **Spectators** — join a game in progress and watch (public info only), then get
-  dealt in on the next round.
-- **Turn timers** — 20s for humans, faster for AI; if you go AFK the server
-  auto-plays a safe move so the table never hangs.
-- **Faithful UI** — the original look ported over: copper-rail felt table, the
-  same card design, drag-to-group / drag-to-reorder / drag-to-discard, the gold
-  "you can take this" glow on the discard pile, sapaw arming, and fly animations.
-- **Economy off** — no coins, pots, ranks, or accounts. Everything is casual.
-
-**Tests:** `engine.test.mjs` — 5,998 assertions; `room-core.test.mjs` — 37 cases.
-Run with `node engine.test.mjs` and `node room-core.test.mjs`.
-
+Current progress (done)
+The game
+Real-time multiplayer — the server owns the cards, so the client can't cheat.
+Full draw / challenge rules — call a draw only before drawing, with an
+exposed meld, and not right after a sapaw by or onto you. Opponents with a meld
+then Challenge or Fold in a popup; opponents without a meld are auto-burned.
+The caller's hand stays hidden until everyone decides; only the caller and
+challengers reveal. Lowest count wins; ties go to the challenger (last one, in a
+three-way tie).
+Survival sapaw — you can lay off onto any meld (yours or an opponent's) even
+without your own meld, to trim your hand and block the opponent's draw call. Bots
+do this too when they're under threat.
+Sapaw by tap or drag — arm a card and tap a glowing meld, or drag a card
+(from your hand or a group) straight onto a meld. Drag a card onto the discard
+to end your turn.
+Round-over → Ready / Leave — every human readies up for the next round (AI
+auto-readies); it deals when everyone's ready. Anyone can leave to the lobby; the
+rest see a red "player left" notice, and the freed seat re-lists in the lobby.
+Turn timers with a constant blinking AFK warning; going idle auto-discards
+your lowest card.
+Two card looks — a clean CSS deck by default, plus an optional SVG sprite
+deck via a Card skin toggle (your choice is remembered).
+Animations — cards fly from the draw pile to a hand, from a hand to the
+discard, and onto melds — for you and your opponents.
+Mobile — the log is hidden, chat becomes a popup with a new-message dot, a
+floating turn timer blinks red on your turn, and your hand fans to fit the screen.
+The lobby (real-time hub)
+Full-page lobby — Open Tables, Online Players, and World Chat side by side.
+Presence — everyone online is listed with a green dot and a LOBBY or
+PLAYING status.
+Unique names — case-insensitive; a name in use by someone online is rejected.
+Names allow letters, numbers, and at most one space.
+World chat — global chat that keeps the last 50 messages so newcomers see
+recent history.
+@mentions — type `@name`, or click a player to insert it; a bell chimes when
+you're mentioned in the lobby (silent while you're in a game).
+How to play lives in the lobby (removed from the in-game screen).
+Economy off — no coins, pots, ranks, or accounts. Everything is casual.
+Tests: `engine.test.mjs` ~6,000 assertions · `room-core.test.mjs` 42 cases ·
+`lobby-do.test.mjs` 19 cases. Run each with `node <file>`.
 ---
-
-## What's new in this update — the draw / challenge rework
-
-The "call a draw" mechanic now follows real Tong-its instead of instantly ending
-the round.
-
-- **Proper eligibility.** You can only call a draw at the **start of your turn,
-  before drawing**, and only if you have at least one exposed meld. You're blocked
-  for one turn if you laid off (sapaw) on your previous turn, **or** if anyone laid
-  off onto one of your melds since your previous turn — you have to wait for your
-  next turn. (This fixes the bug where a bot could meld and instantly win.)
-- **Challenge or fold.** When you call, every opponent **with a meld** chooses to
-  **Challenge** or **Fold**. Opponents **without** a meld are automatically folded
-  ("burned") and don't reveal anything.
-- **Hidden until everyone decides.** The caller's hand is **only revealed after
-  all opponents have answered** — challengers reveal too, while folded and burned
-  players keep their cards hidden. Lowest points wins; ties go to the challenger,
-  and a three-way tie goes to whoever challenged last.
-- **Smarter AI.** Bots now answer a called draw (challenge with a low hand, fold
-  otherwise) and call far less recklessly — only with a genuinely strong hand.
-- **Showdown screen.** The round-over modal shows who called, who challenged, who
-  folded, who was burned, and the winner — and it no longer leaks the hands of
-  players who folded or burned.
-
+Roadmap — what's next
+Reconnect grace — a short window so a dropped connection doesn't instantly
+drop you from a table (today, disconnect = leave).
+Quick play — a one-tap "join any open table."
+AI-rescue rooms — surface a 2-humans-plus-a-bot table with an open seat so a
+third human can swap in for the bot.
+Lobby polish — mention matching that respects word boundaries, a bell toggle,
+and removing the old (now-unused) center-modal lobby code.
+Mobile polish — continued tuning on small screens.
+Deliberately deferred (to stay free and casual): coins/economy, ranks and
+leaderboards, registration/account recovery, and social login.
 ---
-
-## Roadmap — things to look for next
-
-Near-term polish and features being considered:
-
-- **Reconnect grace** — a short window so a dropped Wi-Fi connection doesn't
-  instantly kick you from the table (today, disconnect = leave).
-- **Quick play** — a one-tap "join any open table" button so you don't have to
-  scan the lobby.
-- **AI-rescue rooms** — let a 2-humans-plus-a-bot room with an open seat show up
-  in the public list, so a third human can swap in for the bot.
-- **Chat polish** — friendlier table chat, and possibly a lightweight global chat
-  so players can find each other.
-- **Mobile layout pass** — tuning the table and controls for small screens.
-
-Deliberately **deferred** (not planned for now): coins/economy, ranks and
-leaderboards, registration/account recovery, and social login. The game is meant
-to stay free and casual.
-
+Deploy notes
+The client is static assets; the server is the Worker plus two Durable Object
+classes (`Room`, `Lobby`), both SQLite-backed and free-plan eligible. `wrangler.toml`
+already contains their migrations — adding WebSockets to the existing `Lobby`
+class needs no new migration. After updating files, redeploy and do a quick
+two-browser check of the lobby (presence, world chat, unique names, the bell)
+and a two-device check of a game (challenge/fold, ready-up, animations), since
+live WebSocket behavior only proves out with more than one player connected.
 ---
-
-## Deploy notes
-
-The client is static assets; the server is the Worker plus the two Durable
-Objects. `wrangler.toml` includes the migration that creates the Lobby DO
-alongside the Room DO. After updating files, redeploy and play a quick all-AI
-round to confirm the new draw/challenge flow end-to-end (live WebSocket behavior
-can only be verified after deploy).
-
----
-
-*Built on Cloudflare Workers + Durable Objects. Casual project — feedback welcome.*
+Built on Cloudflare Workers + Durable Objects. A casual project — feedback welcome.
