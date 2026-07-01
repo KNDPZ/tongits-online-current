@@ -241,6 +241,47 @@
   .chat-modal-head{display:flex;justify-content:space-between;align-items:center;font-family:var(--display);font-size:16px;color:var(--cream);margin-bottom:8px;}
   .chat-modal .chat-msgs{flex:1;background:rgba(0,0,0,.25);border-radius:10px;margin-bottom:8px;}
   @media (prefers-reduced-motion: reduce){ *{transition:none !important;} .hand .card.justdrawn{animation:none;box-shadow:0 0 0 3px var(--gold);} .card.candidate{animation:none;box-shadow:0 0 0 2px rgba(244,181,63,.7);} .pill.timer.low{animation:none;} #mTimer.mine{animation:none;} .afkwarn{animation:none;} }
+
+  /* ---- full-page global lobby ---- */
+  #lobby{position:fixed;inset:0;z-index:60;display:flex;flex-direction:column;padding:16px 18px 18px;gap:14px;overflow:hidden;
+    background:radial-gradient(120% 90% at 50% -10%, #123a2a 0%, var(--bg) 62%);}
+  .lb-top{display:flex;justify-content:space-between;align-items:flex-start;gap:16px;flex-wrap:wrap;}
+  .lb-hi h2{margin:0;font-family:var(--display);color:var(--gold);font-size:26px;display:flex;align-items:center;gap:10px;}
+  .lb-hi p{margin:5px 0 0;color:#cdbfe0;font-size:14px;}
+  .lb-hi a{color:var(--gold);}
+  .online-dot{width:12px;height:12px;border-radius:50%;background:var(--good);box-shadow:0 0 9px var(--good);display:inline-block;}
+  .lb-actions{display:flex;gap:10px;flex-wrap:wrap;}
+  .lb-actions button{width:auto;padding:10px 18px;}
+  .lb-grid{flex:1;display:grid;grid-template-columns:1.6fr .9fr 1.1fr;gap:14px;min-height:0;}
+  .lb-panel{background:var(--panel);border-radius:14px;box-shadow:inset 0 0 0 1.5px rgba(244,181,63,.14);display:flex;flex-direction:column;min-height:0;overflow:hidden;}
+  .lb-panel-head{display:flex;justify-content:space-between;align-items:center;padding:12px 14px;font-family:var(--display);color:var(--cream);font-size:14px;border-bottom:1px solid rgba(255,255,255,.06);flex:0 0 auto;}
+  .lb-panel-head a{color:var(--gold);font-size:12px;text-decoration:none;}
+  .lb-scroll{flex:1;overflow-y:auto;padding:10px 12px;min-height:0;}
+  .lb-empty{color:#9fc4ad;text-align:center;padding:22px 6px;font-size:13px;}
+  .lb-room{display:flex;align-items:center;gap:12px;background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.07);border-radius:12px;padding:11px 13px;margin-bottom:10px;}
+  .lb-room .badge{width:44px;height:44px;border-radius:50%;background:radial-gradient(circle at 30% 25%, #2f8f6e, #14503a);display:grid;place-items:center;font-family:var(--display);font-weight:600;color:#eafff5;flex:0 0 auto;font-size:13px;}
+  .lb-room .info{flex:1;min-width:0;}
+  .lb-room .info b{font-family:var(--display);font-size:16px;color:#fff7ea;}
+  .lb-room .info div{color:#a9c9ba;font-size:12.5px;margin-top:1px;}
+  .lb-room button{width:auto;padding:8px 20px;}
+  .lb-player{display:flex;align-items:center;gap:9px;padding:8px;border-radius:9px;cursor:pointer;}
+  .lb-player:hover{background:rgba(255,255,255,.05);}
+  .lb-player .dot{width:9px;height:9px;border-radius:50%;flex:0 0 auto;}
+  .lb-player .dot.lobby{background:var(--good);box-shadow:0 0 6px var(--good);}
+  .lb-player .dot.playing{background:var(--gold);box-shadow:0 0 6px var(--gold);}
+  .lb-player .nm{flex:1;color:var(--cream);font-size:13.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  .lb-player .st{font-family:var(--mono);font-size:9px;letter-spacing:.1em;padding:2px 7px;border-radius:999px;text-transform:uppercase;flex:0 0 auto;}
+  .lb-player .st.lobby{color:#0a3d27;background:var(--good);}
+  .lb-player .st.playing{color:#1a1206;background:var(--gold);}
+  .lb-player.me{cursor:default;} .lb-player.me .nm{color:var(--gold);font-weight:600;}
+  .lb-chat-input{display:flex;gap:8px;padding:10px 12px;border-top:1px solid rgba(255,255,255,.06);flex:0 0 auto;}
+  .lb-chat-input input{flex:1;}
+  .lb-chat-input button{width:auto;padding:0 16px;}
+  .wc-line{margin-bottom:6px;font-size:13px;line-height:1.45;color:#dfeee6;overflow-wrap:anywhere;}
+  .wc-line .who{color:var(--gold);font-weight:600;}
+  .wc-line .mention{color:var(--mint);font-weight:600;}
+  .wc-line.me-mention{background:rgba(95,227,200,.1);border-radius:6px;padding:2px 5px;}
+  @media (max-width:900px){ #lobby{overflow-y:auto;} .lb-grid{grid-template-columns:1fr;grid-auto-rows:minmax(180px,42vh);} }
 </style>
 </head>
 <body>
@@ -1094,7 +1135,7 @@
       <span class="hchip pot" id="hPot" style="display:none">Pot 0</span>
       <span class="hchip" id="hMoney" style="display:none">🪙 0</span>
       <button class="ghost" id="skinBtn" style="display:none">Card skin: off</button>
-      <button class="ghost" id="rulesBtn">How to play</button>
+      <button class="ghost" id="rulesBtn" style="display:none">How to play</button>
       <button class="ghost" id="leaveBtn" style="display:none">Leave</button>
     </div>
   </header>
@@ -1175,6 +1216,7 @@
     <p>Enter your name for the table. Your name carries across rooms; it's saved on this device.</p>
     <label>Your name</label>
     <input id="nameInput" type="text" maxlength="18" placeholder="Your name (e.g. Boy)" />
+    <div id="nameErr" style="color:var(--danger);font-size:12.5px;margin-top:6px;min-height:16px"></div>
     <div class="modal-actions"><button id="nameGo">Continue</button></div>
   </div>
   <div id="p-home" style="display:none">
@@ -1186,11 +1228,12 @@
       <label style="display:flex;justify-content:space-between;align-items:center">Open tables <a href="#" id="refreshRooms" style="color:var(--gold);text-transform:none;letter-spacing:0">refresh</a></label>
       <div class="seats" id="roomList"><div class="hint" style="padding:6px 0">Looking for open tables…</div></div>
     </div>
-    <!-- Sponsored native banner — injected only on this home screen, never inside the live game -->
-    <div id="adHome" style="margin-top:18px">
+    <!-- Reserved ad slot — DISABLED for now (the previous unit auto-redirected). Re-enable by
+         removing display:none and dropping a new ad unit's code into the container below. -->
+    <div id="adHome" style="margin-top:18px;display:none">
       <div style="font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:#7fa890;margin-bottom:6px;text-align:center">Sponsored</div>
       <div style="background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.08);border-radius:12px;padding:10px;min-height:56px">
-        <div id="container-84a4fbc5dc618f2a2b2853dd0dc7f2c8"></div>
+        <div id="adSlot"><!-- ad unit code goes here --></div>
       </div>
     </div>
     <div style="margin-top:14px;text-align:center">
@@ -1238,6 +1281,39 @@
 </div></div>
 
 <!-- how to play -->
+<!-- full-page global lobby (matchmaking + presence + world chat) -->
+<div id="lobby" style="display:none">
+  <div class="lb-top">
+    <div class="lb-hi">
+      <h2>Hi <span id="lbName"></span> <span class="online-dot" title="You're online"></span></h2>
+      <p>Create your own table or join a friend's. <a href="#" id="lbChangeName">change name</a></p>
+    </div>
+    <div class="lb-actions">
+      <button class="good" id="lbCreate">Create a room</button>
+      <button class="info" id="lbJoin">Join a room</button>
+      <button class="ghost" id="lbHowto">How to play</button>
+    </div>
+  </div>
+  <div class="lb-grid">
+    <section class="lb-panel lb-tables">
+      <div class="lb-panel-head">Open tables <a href="#" id="lbRefresh">refresh</a></div>
+      <div class="lb-scroll" id="lbRooms"><div class="lb-empty">Looking for open tables…</div></div>
+    </section>
+    <section class="lb-panel lb-players">
+      <div class="lb-panel-head">Online players</div>
+      <div class="lb-scroll" id="lbPlayers"><div class="lb-empty">Connecting…</div></div>
+    </section>
+    <section class="lb-panel lb-chat">
+      <div class="lb-panel-head">World chat</div>
+      <div class="lb-scroll" id="lbChat"></div>
+      <div class="lb-chat-input">
+        <input id="lbChatInput" type="text" maxlength="240" placeholder="Message everyone… @name to mention" />
+        <button id="lbChatSend">Send</button>
+      </div>
+    </section>
+  </div>
+</div>
+
 <div class="scrim" id="rulesScrim"><div class="modal">
   <h2>How to play Tong-its</h2>
   <p>Three players (or 1v1), one 52-card deck. Empty your hand by forming <b>melds</b>, or hold the fewest points when the round is called. The <b>dealer</b> holds 13 and starts; turns go clockwise; the winner deals next.</p>
@@ -1337,18 +1413,18 @@ function esc(s){return String(s).replace(/[<>&]/g,c=>({"<":"&lt;",">":"&gt;","&"
 
 /* ---------- pre-game screens ---------- */
 const preSections=["p-name","p-home","p-create","p-join","p-lobby"];
-function showPre(id){$("preScrim").classList.add("show");preSections.forEach(s=>$(s).style.display=s===id?"":"none");if(id==="p-home"){startRoomPoll();ensureNativeAd();}}
+function showPre(id){if(id==="p-home"){enterLobby();return;}$("preScrim").classList.add("show");preSections.forEach(s=>$(s).style.display=s===id?"":"none");}
 function hidePre(){$("preScrim").classList.remove("show");}
-let nativeAdLoaded=false;
-function ensureNativeAd(){
-  if(nativeAdLoaded)return;nativeAdLoaded=true;
-  try{
-    const s=document.createElement("script");
-    s.async=true;s.setAttribute("data-cfasync","false");
-    s.src= "";
-    (document.getElementById("adHome")||document.body).appendChild(s);
-  }catch(e){}
+function enterLobby(){
+  hidePre();document.body.classList.remove("in-game");
+  $("lobby").style.display="flex";
+  ["hRoom","hPot","hMoney","leaveBtn","skinBtn"].forEach(id=>$(id).style.display="none");
+  renderLbName();connectHub();hubStatus("lobby");startRoomPoll();
 }
+function renderLbName(){const el=$("lbName");if(el)el.textContent=me.name;const h=$("homeName");if(h)h.textContent=me.name;}
+// Ad loading is DISABLED (the previous unit auto-redirected). To re-enable, drop the
+// new unit's script here and un-hide #adHome in the markup.
+function ensureNativeAd(){ /* disabled */ }
 const params=new URLSearchParams(location.search);
 const urlRoom=(params.get("room")||"").toUpperCase().replace(/[^A-Z0-9]/g,"");
 const urlInvite=params.get("invite")||"";
@@ -1357,7 +1433,23 @@ function boot(){
   $("homeName").textContent=me.name;
   if(urlRoom)doJoin(urlRoom,"",urlInvite);else showPre("p-home");
 }
-$("nameGo").onclick=()=>{const n=$("nameInput").value.trim().replace(/[<>]/g,"").slice(0,18);if(!n)return;me.name=n;localStorage.setItem("tongits_name",n);$("homeName").textContent=n;if(urlRoom)doJoin(urlRoom,"",urlInvite);else showPre("p-home");};
+function normName(n){return n.trim().toLowerCase();}
+function validateName(raw){
+  const n=(raw||"").trim();
+  if(!n)return{ok:false,err:"Please enter a name."};
+  if(n.length>18)return{ok:false,err:"Max 18 characters."};
+  if(!/^[A-Za-z0-9]+( [A-Za-z0-9]+)?$/.test(n))return{ok:false,err:"Letters and numbers only, with at most one space."};
+  return{ok:true,name:n};
+}
+$("nameGo").onclick=()=>{
+  const v=validateName($("nameInput").value);
+  if(!v.ok){$("nameErr").textContent=v.err;return;}
+  $("nameErr").textContent="";me.name=v.name;localStorage.setItem("tongits_name",v.name);
+  try{if(hub){hub.onclose=null;hub.close();}}catch(e){}hub=null;   // re-say hello under the new name
+  if(urlRoom)doJoin(urlRoom,"",urlInvite);else showPre("p-home");
+};
+$("nameInput").addEventListener("keydown",e=>{if(e.key==="Enter")$("nameGo").onclick();});
+$("nameInput").addEventListener("input",()=>{$("nameErr").textContent="";});
 $("nameInput").addEventListener("keydown",e=>{if(e.key==="Enter")$("nameGo").click();});
 $("changeName").onclick=e=>{e.preventDefault();showPre("p-name");$("nameInput").value=me.name;$("nameInput").focus();};
 $("goCreate").onclick=()=>showPre("p-create");
@@ -1398,17 +1490,72 @@ let roomPollTimer=null;
 function startRoomPoll(){stopRoomPoll();fetchRooms();roomPollTimer=setInterval(fetchRooms,4000);}
 function stopRoomPoll(){if(roomPollTimer){clearInterval(roomPollTimer);roomPollTimer=null;}}
 async function fetchRooms(){
-  if(!$("p-home")||$("p-home").style.display==="none"){return;}
+  if($("lobby").style.display==="none"){return;}
   let rooms=[];try{const r=await fetch(apiBase+"/api/rooms");const d=await r.json();rooms=d.rooms||[];}catch(e){return;}
-  const el=$("roomList");if(!el)return;
-  if(!rooms.length){el.innerHTML='<div class="hint" style="padding:6px 0">No open tables right now. Create one and press READY!</div>';return;}
+  renderRooms(rooms);
+}
+function renderRooms(rooms){
+  const el=$("lbRooms");if(!el)return;
+  if(!rooms||!rooms.length){el.innerHTML='<div class="lb-empty">No open tables right now. Create one and press READY!</div>';return;}
   el.innerHTML="";
-  rooms.forEach(rm=>{const d=document.createElement("div");d.className="lseat";
-    d.innerHTML=`<div class="ava">${rm.type==="1v1"?"1·1":"1·2"}</div><div style="flex:1"><b>${rm.type}</b> table${rm.inProgress?' <span class="pill">in play</span>':''}<br><span style="font-size:12px;color:#9fc4ad">${rm.open} open seat${rm.open===1?"":"s"} · ${rm.players} seated</span></div>`;
-    const j=document.createElement("button");j.className="info small";j.textContent="Join";j.onclick=()=>doJoin(rm.roomId,"","");
+  rooms.forEach(rm=>{const type=rm.type||(rm.capacity===2?"1v1":"1v2");const seated=rm.players!=null?rm.players:(rm.capacity-rm.open);
+    const d=document.createElement("div");d.className="lb-room";
+    d.innerHTML=`<div class="badge">${type==="1v1"?"1·1":"1·2"}</div><div class="info"><b>${type} table</b><div>${rm.open} open seat${rm.open===1?"":"s"} · ${seated} seated${rm.inProgress?" · in play":""}</div></div>`;
+    const j=document.createElement("button");j.className="info";j.textContent="Join";j.onclick=()=>doJoin(rm.roomId,"","");
     d.appendChild(j);el.appendChild(d);});
 }
-$("refreshRooms").onclick=e=>{e.preventDefault();fetchRooms();};
+$("lbRefresh").onclick=e=>{e.preventDefault();fetchRooms();};
+$("lbCreate").onclick=()=>showPre("p-create");
+$("lbJoin").onclick=()=>{showPre("p-join");$("joinCode").value="";$("joinErr").textContent="";};
+$("lbHowto").onclick=()=>$("rulesScrim").classList.add("show");
+$("lbChangeName").onclick=e=>{e.preventDefault();showPre("p-name");$("nameInput").value=me.name;$("nameInput").focus();};
+
+/* ---------- global hub: presence + world chat ---------- */
+let hub=null,hubTimer=null,hubStatusVal="lobby",hubLastSent="lobby",onlineUsers=[],wcLines=[];
+function hubUrl(){return (location.protocol==="https:"?"wss://":"ws://")+location.host+"/hub";}
+function connectHub(){
+  if(hub&&(hub.readyState===0||hub.readyState===1))return;
+  try{hub=new WebSocket(hubUrl());}catch(e){return;}
+  hub.onopen=()=>{hubLastSent=hubStatusVal;hubSend({t:"hello",name:me.name,token:me.token,status:hubStatusVal});};
+  hub.onmessage=e=>{let d;try{d=JSON.parse(e.data);}catch(_){return;}onHub(d);};
+  hub.onclose=()=>{hub=null;clearTimeout(hubTimer);if(me.name)hubTimer=setTimeout(connectHub,2500);};
+  hub.onerror=()=>{};
+}
+function hubSend(o){try{if(hub&&hub.readyState===1)hub.send(JSON.stringify(o));}catch(e){}}
+function hubStatus(s){hubStatusVal=s;if(hub&&hub.readyState===1&&hubLastSent!==s){hubLastSent=s;hubSend({t:"status",status:s});}}
+function onHub(d){
+  if(d.t==="nameTaken"){try{hub.onclose=null;hub.close();}catch(e){}hub=null;$("lobby").style.display="none";me.name="";showPre("p-name");$("nameInput").value="";$("nameErr").textContent="That name is taken — pick another.";setTimeout(()=>$("nameInput").focus(),40);return;}
+  if(d.t==="welcome"){renderLbName();return;}
+  if(d.t==="presence"){onlineUsers=d.users||[];renderPlayers();return;}
+  if(d.t==="chatHistory"){wcLines=d.lines||[];renderWorldChat(false);return;}
+  if(d.t==="chat"){wcLines.push(d.line);if(wcLines.length>120)wcLines.shift();renderWorldChat(true);maybeBell(d.line);return;}
+  if(d.t==="rooms"){renderRooms(d.rooms||[]);return;}
+}
+function nameEq(a,b){return (a||"").trim().toLowerCase()===(b||"").trim().toLowerCase();}
+function textMentions(text,name){return (text||"").toLowerCase().includes("@"+(name||"").toLowerCase());}
+function renderPlayers(){
+  const el=$("lbPlayers");if(!el)return;
+  if(!onlineUsers.length){el.innerHTML='<div class="lb-empty">No one online yet.</div>';return;}
+  el.innerHTML="";
+  onlineUsers.forEach(u=>{const isMe=nameEq(u.name,me.name);const st=u.status==="playing"?"playing":"lobby";
+    const d=document.createElement("div");d.className="lb-player"+(isMe?" me":"");
+    d.innerHTML=`<span class="dot ${st}"></span><span class="nm">${esc(u.name)}${isMe?" (you)":""}</span><span class="st ${st}">${st}</span>`;
+    if(!isMe)d.onclick=()=>insertMention(u.name);
+    el.appendChild(d);});
+}
+function fmtChat(text){return esc(text).replace(/@([A-Za-z0-9]+(?:\s[A-Za-z0-9]+)?)/g,'<span class="mention">@$1</span>');}
+function renderWorldChat(scroll){
+  const el=$("lbChat");if(!el)return;
+  el.innerHTML=wcLines.map(l=>{const mine=l.name!==me.name&&textMentions(l.text,me.name);
+    return `<div class="wc-line${mine?" me-mention":""}"><span class="who">${esc(l.name)}:</span> ${fmtChat(l.text)}</div>`;}).join("");
+  if(scroll!==false)el.scrollTop=el.scrollHeight;
+}
+function insertMention(name){const inp=$("lbChatInput");if(!inp)return;const cur=inp.value.replace(/\s*$/,"");inp.value=(cur?cur+" ":"")+"@"+name+" ";inp.focus();}
+function sendWorld(){const inp=$("lbChatInput");if(!inp)return;const t=inp.value.trim();if(!t)return;hubSend({t:"chat",text:t});inp.value="";}
+$("lbChatSend").onclick=sendWorld;
+$("lbChatInput").addEventListener("keydown",e=>{if(e.key==="Enter")sendWorld();});
+function maybeBell(line){if(!line||nameEq(line.name,me.name))return;if(hubStatusVal==="playing")return;if(textMentions(line.text,me.name))playBell();}
+function playBell(){try{const AC=window.AudioContext||window.webkitAudioContext;if(!AC)return;const ctx=new AC();const now=ctx.currentTime;[880,1320].forEach((f,i)=>{const o=ctx.createOscillator(),g=ctx.createGain();o.type="sine";o.frequency.value=f;o.connect(g);g.connect(ctx.destination);const s=now+i*0.16;g.gain.setValueAtTime(0.0001,s);g.gain.exponentialRampToValueAtTime(0.25,s+0.02);g.gain.exponentialRampToValueAtTime(0.0001,s+0.32);o.start(s);o.stop(s+0.34);});}catch(e){}}
 
 /* ---------- networking ---------- */
 let expectedClose=false;
@@ -1525,6 +1672,8 @@ function removeFromModel(id){groups=groups.map(g=>g.filter(x=>x!==id)).filter(g=
 /* ---------- render ---------- */
 function render(){
   if(!view){document.body.classList.remove("in-game");return;}
+  $("lobby").style.display="none";           // in a room now — hide the global lobby
+  if(typeof hubStatus==="function")hubStatus("playing");
   if(view.type==="lobby"){document.body.classList.remove("in-game");renderLobby(view);return;}
   document.body.classList.add("in-game");
   hidePre();renderGame(view);
