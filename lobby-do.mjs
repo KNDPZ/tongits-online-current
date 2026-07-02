@@ -8,8 +8,14 @@
 
 const CHAT_MAX = 50;
 const ROOM_STALE_MS = 600000;
+export const CHAT_TTL_MS = 15 * 60 * 1000; // world-chat messages vanish after 15 minutes
 
 export function normName(n) { return String(n || "").trim().toLowerCase(); }
+
+// pure: drop chat lines older than the TTL
+export function pruneChat(hist, now = Date.now()) {
+  return (hist || []).filter((l) => l && typeof l.at === "number" && now - l.at < CHAT_TTL_MS);
+}
 
 // pure: prune stale rooms + shape the public list
 export function shapeRooms(rooms, now = Date.now()) {
@@ -110,7 +116,7 @@ export class Lobby {
       const status = d.status === "playing" ? "playing" : "lobby";
       ws.serializeAttachment({ token, name, norm, status });
       this.send(ws, { t: "welcome", name });
-      this.send(ws, { t: "chatHistory", lines: await this.getChat() });
+      this.send(ws, { t: "chatHistory", lines: pruneChat(await this.getChat()) });
       this.send(ws, { t: "rooms", rooms: this.roomList() });
       this.broadcastPresence();
       return;
@@ -127,7 +133,7 @@ export class Lobby {
       const text = String(d.text || "").trim().slice(0, 240);
       if (!text) return;
       const line = { name: self.name, text, at: Date.now() };
-      const hist = pushChat(await this.getChat(), line);
+      const hist = pushChat(pruneChat(await this.getChat()), line);
       await this.state.storage.put("chat", hist);
       this.broadcast({ t: "chat", line });
       return;
