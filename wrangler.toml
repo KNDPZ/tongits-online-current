@@ -1,4 +1,4 @@
-name = "tongits"
+name = "tongits-online"
 main = "worker.mjs"
 compatibility_date = "2025-09-01"
 
