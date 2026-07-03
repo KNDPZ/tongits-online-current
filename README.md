@@ -8,7 +8,7 @@ accounts, no coins, no ranks — open a table and play, or find people in the lo
 
 > Status: playable and feature-rich. Core rules, the full draw/challenge
 > showdown, a real-time lobby with world chat and presence, mobile support, and
-> two card looks are all in. Newest work: the global lobby + world chat.
+> two card looks are all in. Newest work: a full visual redesign (“Gabi ng Tong-its”), sound + haptics, a local record/streak strip, hand sorting, PWA install, and a tabbed mobile lobby.
 
 ---
 
@@ -91,6 +91,14 @@ browser ─ HTTP /api/*  ───────────┐
 - **@mentions** — type `@name`, or click a player to insert it; a bell chimes when
   you're mentioned in the lobby (silent while you're in a game).
 - **How to play** lives in the lobby (removed from the in-game screen).
+
+### The polish layer (client-only, no rules changed)
+- **New visual identity** — night-market palette (tungsten gold on deep felt), narra-wood rail, capiz-cream cards, Baloo 2 + Nunito type, and a lobby hero with a fanned-cards logo.
+- **Sound & haptics** — tiny synthesized WebAudio cues (draw, discard, meld, your-turn chime, win/lose sting) plus phone vibration; one-tap 🔊 toggle in the lobby and in-game header, remembered per device.
+- **Your record** — a localStorage stats strip in the lobby: rounds, wins + win %, Tongits count, current/best win streak, and a 🔥 day-streak. No accounts needed; it all lives on the device.
+- **Sort your hand** — ⇅ button toggles suit/rank ordering of ungrouped cards (client-side only).
+- **Tabbed mobile lobby** — Tables / Players / World chat tabs on small screens instead of a long scroll.
+- **Installable** — web manifest + generated icons, theme color, and safe-area insets, so “Add to Home Screen” gives a proper app feel.
 
 **Economy off** — no coins, pots, ranks, or accounts. Everything is casual.
 

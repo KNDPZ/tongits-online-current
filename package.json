@@ -1,0 +1,12 @@
+{
+  "name": "tongits-online",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev --local",
+    "deploy": "wrangler deploy"
+  },
+  "devDependencies": {
+    "wrangler": "^4.107.0"
+  }
+}
