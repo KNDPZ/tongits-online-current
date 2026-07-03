@@ -86,10 +86,12 @@
   .main{flex:1 1 auto;min-height:0;display:grid;grid-template-columns:204px minmax(0,1fr) 306px;gap:12px;padding:0 14px calc(12px + var(--sab));}
   body:not(.in-game) .main{display:none;}
   .left,.center,.right{min-height:0;}
-  .left{display:flex;flex-direction:column;}
+  .left{display:flex;flex-direction:column;gap:10px;}
+  .left .panel{flex:1 1 0;min-height:0;display:flex;flex-direction:column;}
   .center{display:flex;flex-direction:column;overflow:hidden;}
   .table-scroll{flex:1 1 auto;min-height:0;overflow:auto;scrollbar-width:thin;scrollbar-color:rgba(246,183,60,.35) transparent;}
-  .right{display:flex;flex-direction:column;min-height:0;}
+  .right{display:flex;flex-direction:column;min-height:0;gap:10px;}
+  .right .chat{flex:1 1 0;}
   .panel{background:var(--panel);border-radius:16px;box-shadow:inset 0 0 0 1px var(--line), 0 4px 16px rgba(0,0,0,.25);backdrop-filter:blur(4px);}
   .panel-label{font-family:var(--display);font-size:13px;font-weight:700;letter-spacing:.04em;color:var(--cream-soft);padding:11px 13px 6px;display:flex;align-items:center;justify-content:space-between;}
   .panel-label small{font-weight:700;font-size:9.5px;letter-spacing:.14em;text-transform:uppercase;color:var(--txt-dim);}
@@ -1311,9 +1313,15 @@
   </header>
 
   <div class="main">
-    <aside class="left panel">
-      <div class="panel-label">Game log <small>this room</small></div>
-      <div class="log" id="log"></div>
+    <aside class="left">
+      <div class="panel">
+        <div class="panel-label">Game log <small>this room</small></div>
+        <div class="log" id="log"></div>
+      </div>
+      <div class="panel">
+        <div class="panel-label">Online players <small>everyone</small></div>
+        <div class="log" id="gamePlayers"></div>
+      </div>
     </aside>
 
     <section class="center">
@@ -1356,6 +1364,15 @@
 
     <aside class="right">
       <div class="chat panel">
+        <div class="panel-label">World chat <small>everyone</small></div>
+        <div class="chat-msgs" id="gwChat"></div>
+        <div class="wc-replybar" id="gwReplyBar" style="display:none"><span class="txt" id="gwReplyTxt"></span><button class="ghost" id="gwReplyX" title="Cancel reply">✕</button></div>
+        <div class="chat-input">
+          <input id="gwInput" type="text" maxlength="240" placeholder="Message everyone… @name to mention" />
+          <button class="small" id="gwSend">Send</button>
+        </div>
+      </div>
+      <div class="chat panel">
         <div class="panel-label">Table chat <small>this room</small></div>
         <div class="chat-msgs" id="chatMessages"></div>
         <div class="chat-input">
@@ -1371,11 +1388,18 @@
 <button id="chatFab" aria-label="Open table chat">💬<span id="chatFabDot"></span></button>
 <div id="mTimer"><span id="mTimerTxt"></span></div>
 <div class="scrim" id="chatScrim"><div class="modal chat-modal">
-  <div class="chat-modal-head"><span>Table chat</span><button class="ghost small" id="chatClose">Close</button></div>
+  <div class="chat-modal-head"><span>Chat</span><button class="ghost small" id="chatClose">Close</button></div>
+  <div class="seg" id="mChatSeg" style="margin-bottom:8px"><button data-c="table" class="sel">Table</button><button data-c="world">World</button></div>
   <div class="chat-msgs" id="chatMessagesM"></div>
+  <div class="chat-msgs" id="mwChat" style="display:none"></div>
+  <div class="wc-replybar" id="mwReplyBar" style="display:none;margin:0 0 8px"><span class="txt" id="mwReplyTxt"></span><button class="ghost" id="mwReplyX" title="Cancel reply">✕</button></div>
   <div class="chat-input">
     <input id="chatInputM" type="text" maxlength="120" placeholder="Message your table" />
     <button class="small" id="chatSendM">Send</button>
+  </div>
+  <div class="chat-input" id="mwInputRow" style="display:none;padding-left:0;padding-right:0">
+    <input id="mwInput" type="text" maxlength="240" placeholder="Message everyone… @name to mention" />
+    <button class="small" id="mwSend">Send</button>
   </div>
 </div></div>
 
@@ -1466,6 +1490,12 @@
   <p id="invTxt"></p>
   <div class="modal-actions"><button class="ghost" id="invNo">Dismiss</button><button class="good" id="invYes">Join room</button></div>
 </div></div>
+<!-- another player's record (from the presence feed) -->
+<div class="scrim" id="statScrim"><div class="modal">
+  <h2>📊 <span id="statName"></span></h2>
+  <div class="lb-stats" id="statChips" style="margin:12px 0 2px"></div>
+  <div class="modal-actions"><button class="ghost" id="statClose">Close</button></div>
+</div></div>
 <!-- floating popover for player rows and chat messages -->
 <div id="pPop" class="popmenu" style="display:none"></div>
 
@@ -1486,6 +1516,7 @@
       <button class="info" id="lbJoin">Join a room</button>
       <button class="ghost" id="lbHowto">How to play</button>
       <button class="ghost" id="lbSndBtn">🔊 Sound on</button>
+      <button class="ghost" id="lbServersBtn">🌐 Servers</button>
     </div>
   </div>
   <div class="lb-stats" id="lbStats"></div>
@@ -1729,7 +1760,7 @@ function hubUrl(){return (location.protocol==="https:"?"wss://":"ws://")+locatio
 function connectHub(){
   if(hub&&(hub.readyState===0||hub.readyState===1))return;
   try{hub=new WebSocket(hubUrl());}catch(e){return;}
-  hub.onopen=()=>{hubLastSent=hubSig();hubSend({t:"hello",name:me.name,token:me.token,status:hubStatusVal,...hubCtx});};
+  hub.onopen=()=>{hubLastSent=hubSig();hubSend({t:"hello",name:me.name,token:me.token,status:hubStatusVal,stats:loadStats(),...hubCtx});};
   hub.onmessage=e=>{let d;try{d=JSON.parse(e.data);}catch(_){return;}onHub(d);};
   hub.onclose=()=>{hub=null;clearTimeout(hubTimer);if(me.name)hubTimer=setTimeout(connectHub,2500);};
   hub.onerror=()=>{};
@@ -1757,36 +1788,40 @@ function onHub(d){
 function nameEq(a,b){return (a||"").trim().toLowerCase()===(b||"").trim().toLowerCase();}
 function textMentions(text,name){return (text||"").toLowerCase().includes("@"+(name||"").toLowerCase());}
 function renderPlayers(){
-  const el=$("lbPlayers");if(!el)return;
-  if(!onlineUsers.length){el.innerHTML='<div class="lb-empty">No one online yet.</div>';return;}
-  el.innerHTML="";
-  onlineUsers.forEach(u=>{const isMe=nameEq(u.name,me.name);const st=u.status==="playing"?"playing":"lobby";
-    const d=document.createElement("div");d.className="lb-player"+(isMe?" me":"");
-    d.innerHTML=`<span class="dot ${st}"></span><span class="nm">${esc(u.name)}${isMe?" (you)":""}</span><span class="st ${st}">${st}</span>`;
-    if(!isMe)d.onclick=ev=>openPlayerPop(ev,u);
-    el.appendChild(d);});
+  for(const el of [$("lbPlayers"),$("gamePlayers")]){
+    if(!el)continue;
+    if(!onlineUsers.length){el.innerHTML='<div class="lb-empty">No one online yet.</div>';continue;}
+    el.innerHTML="";
+    onlineUsers.forEach(u=>{const isMe=nameEq(u.name,me.name);const st=u.status==="playing"?"playing":"lobby";
+      const d=document.createElement("div");d.className="lb-player"+(isMe?" me":"");
+      d.innerHTML=`<span class="dot ${st}"></span><span class="nm">${esc(u.name)}${isMe?" (you)":""}</span><span class="st ${st}">${st}</span>`;
+      if(!isMe)d.onclick=ev=>openPlayerPop(ev,u);
+      el.appendChild(d);});
+  }
 }
 const WC_TTL_MS=15*60*1000; // messages vanish 15 min after they're sent
 function wcVisible(){const cutoff=Date.now()-WC_TTL_MS;return wcLines.filter(l=>!l.at||l.at>cutoff);}
 function fmtChat(text){return esc(text).replace(/@([A-Za-z0-9]+(?:\s[A-Za-z0-9]+)?)/g,'<span class="mention">@$1</span>');}
 function renderWorldChat(scroll){
-  const el=$("lbChat");if(!el)return;
-  const prevTop=el.scrollTop;
   const vis=wcVisible();
-  el.innerHTML=vis.map(l=>{
-    if(l.sys)return `<div class="wc-line sys ${l.style==="err"?"err":""}">${esc(l.text)}</div>`;
-    const mine=l.name!==me.name&&textMentions(l.text,me.name);
-    const sel=replyTarget&&l.id&&l.id===replyTarget.id;
-    const quote=l.reply?`<div class="wc-quote"><b>${esc(l.reply.name)}</b> ${fmtChat(l.reply.text)}</div>`:"";
-    return `<div class="wc-line msg${mine?" me-mention":""}${sel?" reply-sel":""}">${quote}<span class="who">${esc(l.name)}:</span> ${fmtChat(l.text)}</div>`;
-  }).join("");
-  [...el.children].forEach((n,i)=>{const l=vis[i];if(l&&!l.sys)n.onclick=ev=>openMsgPop(ev,l);});
-  if(scroll!==false)el.scrollTop=el.scrollHeight;else el.scrollTop=prevTop;
+  for(const el of [$("lbChat"),$("gwChat"),$("mwChat")]){
+    if(!el)continue;
+    const prevTop=el.scrollTop;
+    el.innerHTML=vis.map(l=>{
+      if(l.sys)return `<div class="wc-line sys ${l.style==="err"?"err":""}">${esc(l.text)}</div>`;
+      const mine=l.name!==me.name&&textMentions(l.text,me.name);
+      const sel=replyTarget&&l.id&&l.id===replyTarget.id;
+      const quote=l.reply?`<div class="wc-quote"><b>${esc(l.reply.name)}</b> ${fmtChat(l.reply.text)}</div>`:"";
+      return `<div class="wc-line msg${mine?" me-mention":""}${sel?" reply-sel":""}">${quote}<span class="who">${esc(l.name)}:</span> ${fmtChat(l.text)}</div>`;
+    }).join("");
+    [...el.children].forEach((n,i)=>{const l=vis[i];if(l&&!l.sys)n.onclick=ev=>openMsgPop(ev,l);});
+    if(scroll!==false)el.scrollTop=el.scrollHeight;else el.scrollTop=prevTop;
+  }
 }
 setInterval(()=>{const cutoff=Date.now()-WC_TTL_MS;const before=wcLines.length;wcLines=wcLines.filter(l=>!l.at||l.at>cutoff);
   if(wcLines.length!==before&&$("lobby")&&$("lobby").style.display!=="none")renderWorldChat(false);},20000);
 function insertMention(name){const inp=$("lbChatInput");if(!inp)return;const cur=inp.value.replace(/\s*$/,"");inp.value=(cur?cur+" ":"")+"@"+name+" ";inp.focus();}
-function sendWorld(){const inp=$("lbChatInput");if(!inp)return;const t=inp.value.trim();if(!t)return;
+function sendWorld(fromId){const inp=$(typeof fromId==="string"?fromId:"lbChatInput");if(!inp)return;const t=inp.value.trim();if(!t)return;
   // "@name /join" (or "/join @name") = ask that player for a seat in their room
   if(/\/join\b/i.test(t)){
     const mm=t.match(/@([A-Za-z0-9]+(?:\s[A-Za-z0-9]+)?)/);
@@ -1796,9 +1831,13 @@ function sendWorld(){const inp=$("lbChatInput");if(!inp)return;const t=inp.value
   }
   const msg={t:"chat",text:t};if(replyTarget&&replyTarget.id)msg.replyTo=replyTarget.id;
   hubSend(msg);inp.value="";clearReply();}
-$("lbChatSend").onclick=sendWorld;
-$("lbChatInput").addEventListener("keydown",e=>{if(e.key==="Enter")sendWorld();});
-function maybeBell(line){if(!line||nameEq(line.name,me.name))return;if(document.body.classList.contains("in-game"))return;if(textMentions(line.text,me.name))playBell();}
+$("lbChatSend").onclick=()=>sendWorld("lbChatInput");
+$("lbChatInput").addEventListener("keydown",e=>{if(e.key==="Enter")sendWorld("lbChatInput");});
+for(const [inp,btn] of [["gwInput","gwSend"],["mwInput","mwSend"]]){
+  if($(btn))$(btn).onclick=()=>sendWorld(inp);
+  if($(inp))$(inp).addEventListener("keydown",e=>{if(e.key==="Enter")sendWorld(inp);});
+}
+function maybeBell(line){if(!line||nameEq(line.name,me.name))return;if(textMentions(line.text,me.name))playBell();}
 function playBell(){try{const AC=window.AudioContext||window.webkitAudioContext;if(!AC)return;const ctx=new AC();const now=ctx.currentTime;[880,1320].forEach((f,i)=>{const o=ctx.createOscillator(),g=ctx.createGain();o.type="sine";o.frequency.value=f;o.connect(g);g.connect(ctx.destination);const s=now+i*0.16;g.gain.setValueAtTime(0.0001,s);g.gain.exponentialRampToValueAtTime(0.25,s+0.02);g.gain.exponentialRampToValueAtTime(0.0001,s+0.32);o.start(s);o.stop(s+0.34);});}catch(e){}}
 
 /* ---------- networking ---------- */
@@ -2368,6 +2407,7 @@ function _recordRound(v){
     s.lastDay=today;
   }
   saveStats(s);renderStats();
+  try{hubSend({t:"stats",stats:s});}catch(e){}   // share the fresh record with everyone
 }
 let _overSeen=false;
 const _renderOver=renderOver;
@@ -2468,12 +2508,35 @@ window.addEventListener("keydown",e=>{if(e.key==="Escape"){hidePop();clearReply(
 
 function openPlayerPop(ev,u){
   ev.stopPropagation();
-  const items=[{label:"💬 Mention @"+u.name,fn:()=>insertMention(u.name)}];
-  const waiting=view&&view.type==="lobby";
+  const items=[{label:"📊 View record",fn:()=>showStat(u)},
+               {label:"💬 Mention @"+u.name,fn:()=>insertMention(u.name)}];
   if(!view&&u.status==="playing")items.push({label:"🙋 Request to join their room",fn:()=>hubSend({t:"joinreq",to:u.name})});
-  if(waiting)items.push({label:"✉️ Invite to your room",fn:()=>hubSend({t:"invite",to:u.name,invite:room.invite||""})});
+  // in a room (waiting OR mid-game) with an open seat -> can invite directly
+  if(view&&u.status!=="playing"&&(roomCtxNow().open|0)>0)
+    items.push({label:"✉️ Invite to your room",fn:()=>hubSend({t:"invite",to:u.name,invite:room.invite||""})});
   showPop(ev.clientX,ev.clientY,items);
 }
+
+/* ---- another player's record (rides the presence feed) ---- */
+function showStat(u){
+  $("statName").textContent="@"+u.name+"'s record";
+  const s=u.stats;
+  const chips=[];
+  if(!s||!s.rounds){
+    chips.push(`<span class="lb-stat hint-first">🃏 No rounds recorded yet on their device.</span>`);
+  }else{
+    const pct=Math.round(100*s.wins/s.rounds);
+    chips.push(`<span class="lb-stat"><b>${s.rounds}</b> rounds</span>`);
+    chips.push(`<span class="lb-stat"><b>${s.wins}</b> wins · ${pct}%</span>`);
+    if(s.tongits)chips.push(`<span class="lb-stat hot"><b>${s.tongits}</b> Tongits!</span>`);
+    chips.push(`<span class="lb-stat${s.streak>=2?" hot":""}"><b>${s.streak}</b> win streak · best ${s.best}</span>`);
+    if(s.days>1)chips.push(`<span class="lb-stat hot">🔥 <b>${s.days}</b>-day streak</span>`);
+  }
+  $("statChips").innerHTML=chips.join("");
+  $("statScrim").classList.add("show");
+}
+if($("statClose"))$("statClose").onclick=()=>$("statScrim").classList.remove("show");
+if($("statScrim"))$("statScrim").addEventListener("click",e=>{if(e.target===$("statScrim"))$("statScrim").classList.remove("show");});
 function openMsgPop(ev,l){
   ev.stopPropagation();
   const items=[{label:"↩ Reply",fn:()=>setReply(l)}];
@@ -2483,20 +2546,22 @@ function openMsgPop(ev,l){
 
 /* ---- reply-to-message (WhatsApp-style quote) ---- */
 let replyTarget=null;
+const REPLY_BARS=[["wcReplyBar","wcReplyTxt"],["gwReplyBar","gwReplyTxt"],["mwReplyBar","mwReplyTxt"]];
 function setReply(l){
   replyTarget={id:l.id,name:l.name,text:l.text};
-  const bar=$("wcReplyBar");if(bar){bar.style.display="flex";
-    $("wcReplyTxt").innerHTML=`Replying to <b>${esc(l.name)}</b>: ${esc((l.text||"").slice(0,60))}${(l.text||"").length>60?"…":""}`;}
+  const html=`Replying to <b>${esc(l.name)}</b>: ${esc((l.text||"").slice(0,60))}${(l.text||"").length>60?"…":""}`;
+  for(const [bar,txt] of REPLY_BARS){const b=$(bar);if(b){b.style.display="flex";$(txt).innerHTML=html;}}
   renderWorldChat(false);
-  const inp=$("lbChatInput");if(inp)inp.focus();
+  const inp=document.body.classList.contains("in-game")?($("chatScrim").classList.contains("show")?$("mwInput"):$("gwInput")):$("lbChatInput");
+  if(inp)inp.focus();
 }
 function clearReply(){
   if(!replyTarget)return;
   replyTarget=null;
-  const bar=$("wcReplyBar");if(bar)bar.style.display="none";
+  for(const [bar] of REPLY_BARS){const b=$(bar);if(b)b.style.display="none";}
   renderWorldChat(false);
 }
-if($("wcReplyX"))$("wcReplyX").onclick=clearReply;
+for(const x of ["wcReplyX","gwReplyX","mwReplyX"])if($(x))$(x).onclick=clearReply;
 
 /* ---- join requests + invites ---- */
 let pendingReq=null,pendingInv=null;
@@ -2531,6 +2596,23 @@ function leaveThenJoin(roomId,invite){
 
 /* keepalive: lets the server tell a healthy idle room from a ghost one */
 setInterval(()=>{try{if(ws&&ws.readyState===1&&view)send({t:"ping"});}catch(e){}},25000);
+
+/* servers hub page */
+if($("lbServersBtn"))$("lbServersBtn").onclick=()=>{location.href="https://servers-tongits.playy.online/";};
+
+/* mobile chat modal: Table / World toggle */
+const _mSeg=$("mChatSeg");
+if(_mSeg)_mSeg.querySelectorAll("button").forEach(b=>{
+  b.onclick=()=>{
+    _mSeg.querySelectorAll("button").forEach(x=>x.classList.toggle("sel",x===b));
+    const world=b.dataset.c==="world";
+    $("chatMessagesM").style.display=world?"none":"";
+    $("chatInputM").parentElement.style.display=world?"none":"";
+    $("mwChat").style.display=world?"":"none";
+    $("mwInputRow").style.display=world?"flex":"none";
+    if(world){renderWorldChat(true);}
+  };
+});
 
 boot();
 </script>

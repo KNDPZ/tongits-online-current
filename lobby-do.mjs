@@ -31,6 +31,13 @@ export function shapeRooms(rooms, now = Date.now()) {
   };
 }
 
+// pure: clamp a client-reported record so nothing silly rides the presence feed
+export function sanStats(s) {
+  s = s && typeof s === "object" ? s : {};
+  const n = (v) => Math.max(0, Math.min(1e6, v | 0));
+  return { rounds: n(s.rounds), wins: n(s.wins), tongits: n(s.tongits), streak: n(s.streak), best: n(s.best), days: n(s.days) };
+}
+
 // pure: dedupe presence by token (a user with two tabs shows once; "playing" wins)
 export function dedupePresence(entries) {
   const byTok = new Map();
@@ -40,7 +47,7 @@ export function dedupePresence(entries) {
     if (!prev || (e.status === "playing" && prev.status !== "playing")) byTok.set(e.token, e);
   }
   return [...byTok.values()]
-    .map((e) => ({ name: e.name, status: e.status }))
+    .map((e) => ({ name: e.name, status: e.status, stats: e.stats || null }))
     .sort((a, b) => a.name.localeCompare(b.name));
 }
 
@@ -133,7 +140,7 @@ export class Lobby {
       const others = this.sockets().filter((w) => w !== ws).map((w) => { try { return w.deserializeAttachment(); } catch { return null; } });
       if (nameTakenBy(others, norm, token)) { this.send(ws, { t: "nameTaken" }); return; }
       const status = d.status === "playing" ? "playing" : "lobby";
-      ws.serializeAttachment({ token, name, norm, status, ...roomCtx(d) });
+      ws.serializeAttachment({ token, name, norm, status, stats: sanStats(d.stats), ...roomCtx(d) });
       this.send(ws, { t: "welcome", name });
       this.send(ws, { t: "chatHistory", lines: pruneChat(await this.getChat()) });
       this.send(ws, { t: "rooms", rooms: this.roomList() });
@@ -142,6 +149,12 @@ export class Lobby {
     }
     const self = (() => { try { return ws.deserializeAttachment(); } catch { return null; } })();
     if (!self) return; // must say hello first
+    if (d.t === "stats") {              // player pushed an updated record
+      self.stats = sanStats(d.stats);
+      ws.serializeAttachment(self);
+      this.broadcastPresence();
+      return;
+    }
     if (d.t === "status") {
       self.status = d.status === "playing" ? "playing" : "lobby";
       Object.assign(self, roomCtx(d));            // room the player is in (if any)

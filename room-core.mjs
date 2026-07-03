@@ -320,10 +320,13 @@ export function leaveRoom(room, token, { rnd = Math.random } = {}) {
   const humansLeft = humanTokens(room).length;
 
   if (room.status === "playing" && wasParticipant) {
-    // the in-progress round no longer counts
+    // the in-progress round no longer counts — void it properly, ending the
+    // ENGINE round as well (otherwise clients never see the round-over screen
+    // and the table freezes with no timer and no legal moves)
     room.dud = true; room.dudReason = `${name} left mid-game — this round doesn't count.`;
     room.status = "over";
     room._nextDealerToken = null;
+    E.voidRound(room.match, room.dudReason);
   }
 
   if (humansLeft === 0) { room.status = "closed"; out.closed = true; return out; }

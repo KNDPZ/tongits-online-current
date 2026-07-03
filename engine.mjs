@@ -342,6 +342,26 @@ function finishCall(state, info) {
 }
 
 
+// End the live round with no winner (e.g. a participant left mid-game).
+// Antes are refunded, the pot clears, and the round is closed in the same
+// shape as a normal ending so clients render the "Round voided" screen.
+export function voidRound(state, reason) {
+  const r = state.round;
+  if (!r || !r.active || r.over) return false;
+  for (const p of state.players) p.money += state.ante;   // give the antes back
+  r.pot = 0;
+  r.call = null;                                          // cancel any pending draw-call
+  r.over = true; r.active = false; r.phase = "over";
+  r.result = {
+    reason: "dud", dud: true, winners: [], draw: false,
+    payouts: {}, nextDealer: r.dealerIdx, emptied: false,
+    counts: state.players.map((_, i) => handCounted(r.hands[i])),
+  };
+  state.version++;
+  logEvent(state, reason || "Round voided.");
+  return true;
+}
+
 // move types:
 //   { type:"draw" }                              (stock)
 //   { type:"drawDiscard", cards:[id,...] }       (take top discard + meld)
