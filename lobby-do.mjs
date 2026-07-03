@@ -7,7 +7,7 @@
 // ============================================================================
 
 const CHAT_MAX = 50;
-const ROOM_STALE_MS = 600000;
+const ROOM_STALE_MS = 120000;   // rooms republish every 45s; 2 missed beats -> pruned
 export const CHAT_TTL_MS = 15 * 60 * 1000; // world-chat messages vanish after 15 minutes
 
 export function normName(n) { return String(n || "").trim().toLowerCase(); }
@@ -49,6 +49,17 @@ export function nameTakenBy(attachments, norm, token) {
   return attachments.some((a) => a && a.norm === norm && a.token !== token);
 }
 
+// pure: sanitize the room-context fields a client may report with hello/status.
+// roomId/open/cap/priv let the hub answer join requests and build invites.
+export function roomCtx(d) {
+  return {
+    roomId: typeof d.roomId === "string" ? d.roomId.slice(0, 12) : "",
+    open: Math.max(0, Math.min(2, d.open | 0)),
+    cap: d.cap === 2 ? 2 : 3,
+    priv: !!d.priv,
+  };
+}
+
 export function pushChat(hist, line) {
   const h = hist.concat([line]);
   return h.length > CHAT_MAX ? h.slice(-CHAT_MAX) : h;
@@ -70,6 +81,14 @@ export class Lobby {
     this.broadcast({ t: "presence", users: dedupePresence(entries) });
   }
   broadcastRooms() { this.broadcast({ t: "rooms", rooms: this.roomList() }); }
+  // first socket whose (normalized) name matches
+  findByName(norm) {
+    for (const w of this.sockets()) {
+      let a; try { a = w.deserializeAttachment(); } catch { continue; }
+      if (a && a.norm === norm) return { ws: w, att: a };
+    }
+    return null;
+  }
 
   async fetch(request) {
     const url = new URL(request.url);
@@ -114,7 +133,7 @@ export class Lobby {
       const others = this.sockets().filter((w) => w !== ws).map((w) => { try { return w.deserializeAttachment(); } catch { return null; } });
       if (nameTakenBy(others, norm, token)) { this.send(ws, { t: "nameTaken" }); return; }
       const status = d.status === "playing" ? "playing" : "lobby";
-      ws.serializeAttachment({ token, name, norm, status });
+      ws.serializeAttachment({ token, name, norm, status, ...roomCtx(d) });
       this.send(ws, { t: "welcome", name });
       this.send(ws, { t: "chatHistory", lines: pruneChat(await this.getChat()) });
       this.send(ws, { t: "rooms", rooms: this.roomList() });
@@ -125,6 +144,7 @@ export class Lobby {
     if (!self) return; // must say hello first
     if (d.t === "status") {
       self.status = d.status === "playing" ? "playing" : "lobby";
+      Object.assign(self, roomCtx(d));            // room the player is in (if any)
       ws.serializeAttachment(self);
       this.broadcastPresence();
       return;
@@ -132,10 +152,54 @@ export class Lobby {
     if (d.t === "chat") {
       const text = String(d.text || "").trim().slice(0, 240);
       if (!text) return;
-      const line = { name: self.name, text, at: Date.now() };
-      const hist = pushChat(pruneChat(await this.getChat()), line);
+      const prev = pruneChat(await this.getChat());
+      // replying to a message? embed a denormalized quote so history stays simple
+      let reply;
+      if (d.replyTo) {
+        const src = prev.find((l) => l.id === d.replyTo);
+        if (src) reply = { name: src.name, text: String(src.text || "").slice(0, 90) };
+      }
+      const line = { id: crypto.randomUUID().slice(0, 8), name: self.name, text, at: Date.now(), ...(reply ? { reply } : {}) };
+      const hist = pushChat(prev, line);
       await this.state.storage.put("chat", hist);
       this.broadcast({ t: "chat", line });
+      return;
+    }
+
+    // ---- join request: lobby player -> player who is inside a room -------------
+    // sender asked to join the room `d.to` is sitting in; hub validates a seat
+    // is open (room directory first, the player's self-report as fallback).
+    if (d.t === "joinreq") {
+      const norm = normName(d.to);
+      if (!norm || norm === self.norm) { this.send(ws, { t: "sys", style: "err", text: "You can't send a join request to yourself." }); return; }
+      const tgt = this.findByName(norm);
+      if (!tgt) { this.send(ws, { t: "sys", style: "err", text: `@${String(d.to).slice(0, 18)} isn't online right now.` }); return; }
+      if (!tgt.att.roomId) { this.send(ws, { t: "sys", style: "err", text: `@${tgt.att.name} isn't in a room right now.` }); return; }
+      const reg = this.rooms[tgt.att.roomId];
+      const open = reg ? (reg.open | 0) : (tgt.att.open | 0);
+      if (open <= 0) { this.send(ws, { t: "sys", style: "err", text: "No available seat in that room — it's already full." }); return; }
+      this.send(tgt.ws, { t: "joinreq", from: self.name });
+      this.send(ws, { t: "sys", style: "info", text: `Join request sent to @${tgt.att.name} — waiting for them to accept…` });
+      return;
+    }
+
+    // ---- join response: in-room player accepts/declines a request --------------
+    if (d.t === "joinres") {
+      if (!self.roomId) return;                       // must be in a room to answer
+      const tgt = this.findByName(normName(d.to));
+      if (!tgt) return;
+      if (d.ok) this.send(tgt.ws, { t: "joinres", ok: true, from: self.name, roomId: self.roomId, invite: String(d.invite || "").slice(0, 32) });
+      else this.send(tgt.ws, { t: "joinres", ok: false, from: self.name });
+      return;
+    }
+
+    // ---- invite: in-room player -> lobby player ---------------------------------
+    if (d.t === "invite") {
+      if (!self.roomId) { this.send(ws, { t: "sys", style: "err", text: "You're not in a room — nothing to invite to." }); return; }
+      const tgt = this.findByName(normName(d.to));
+      if (!tgt) { this.send(ws, { t: "sys", style: "err", text: `@${String(d.to).slice(0, 18)} isn't online right now.` }); return; }
+      this.send(tgt.ws, { t: "invite", from: self.name, roomId: self.roomId, cap: self.cap, priv: self.priv, invite: String(d.invite || "").slice(0, 32) });
+      this.send(ws, { t: "sys", style: "info", text: `Invite sent to @${tgt.att.name}.` });
       return;
     }
     if (d.t === "ping") { this.send(ws, { t: "pong" }); return; }

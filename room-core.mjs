@@ -22,6 +22,12 @@ export function pickAIName(used, rnd = Math.random) {
 }
 
 // ---- construction ----------------------------------------------------------
+// room names: letters, digits and spaces only, max 10 chars (null if empty)
+export function cleanRoomName(s) {
+  const n = String(s || "").replace(/[^A-Za-z0-9 ]/g, "").replace(/\s+/g, " ").trim().slice(0, 10).trim();
+  return n || null;
+}
+
 export function createRoom(opts) {
   const {
     roomId, hostToken, hostName, capacity = 3,
@@ -30,6 +36,7 @@ export function createRoom(opts) {
   } = opts;
   const room = {
     roomId, hostToken, capacity, isPrivate, passwordHash, inviteToken,
+    name: cleanRoomName(opts.roomName),   // optional custom room name
     startMoney, ante,
     seats: new Array(capacity).fill(null),
     players: {},               // token -> {name,isAI,money,rec,games,connected,spectator}
@@ -337,6 +344,7 @@ export function lobbyView(room, token) {
   return {
     type: "lobby",
     roomId: room.roomId, status: room.status, capacity: room.capacity,
+    roomName: room.name || "",
     isPrivate: room.isPrivate, ready: room.ready, mode: room.mode,
     youAreHost: token === room.hostToken,
     yourSeat: seatIndexOf(room, token),
@@ -401,6 +409,9 @@ export function lobbyMeta(room) {
     players: room.capacity - open,
     open,
     inProgress: live,
+    title: room.name || null,   // custom room name (shown instead of "1v2 table")
+    // names of everyone seated (shown in the lobby's table list)
+    names: room.seats.filter((t) => t).map((t) => room.players[t].name),
   };
 }
 

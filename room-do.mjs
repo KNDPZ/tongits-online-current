@@ -7,9 +7,13 @@
 // ============================================================================
 import * as RC from "./room-core.mjs";
 
+const LIST_PING_MS = 45000;    // republish a listed, non-playing room this often
+const GHOST_MS = 180000;       // no message from anyone for this long -> close the room
+
 export class Room {
   constructor(state, env) {
     this.state = state; this.env = env; this.room = null;
+    this._wokeAt = Date.now(); this._lastMsgAt = 0;   // liveness clock for the ghost reaper
     this.lobby = env.LOBBY ? env.LOBBY.get(env.LOBBY.idFromName("global")) : null;
     this.sockets = new Map();
     for (const ws of this.state.getWebSockets()) {
@@ -34,11 +38,13 @@ export class Room {
         this.room = RC.createRoom({
           roomId: body.roomId, hostToken: body.token, hostName: body.name || "Host",
           capacity: clampCap(body.capacity), isPrivate: !!body.private, passwordHash, inviteToken,
+          roomName: body.roomName,
         });
         await this.save();
         return json({ ok: true, roomId: this.room.roomId, seat: 0, invite: inviteToken });
       }
       case "join": {
+        this._lastMsgAt = Date.now();
         if (!this.room || this.room.status === "closed") return json({ error: "no such room" }, 404);
         const pph = body.password ? await sha256hex(body.password) : null;
         const r = RC.joinRoom(this.room, { token: body.token, name: body.name, providedPasswordHash: pph, invite: body.invite });
@@ -64,12 +70,14 @@ export class Room {
     this.state.acceptWebSocket(server);
     server.serializeAttachment({ token });
     this.sockets.set(token, server);
+    this._lastMsgAt = Date.now();
     RC.setConnected(this.room, token, true);
     await this.save(); this.sendTo(token); this.broadcast();
     return new Response(null, { status: 101, webSocket: client });
   }
 
   async webSocketMessage(ws, raw) {
+    this._lastMsgAt = Date.now();
     await this.load(); if (!this.room) return;
     const a = safeAttach(ws); const token = a && a.token;
     let d; try { d = JSON.parse(raw); } catch { return; }
@@ -104,6 +112,8 @@ export class Room {
       this.broadcastRaw({ t: "chat", line });
     } else if (d.t === "sync") {
       this.sendTo(token);
+    } else if (d.t === "ping") {
+      wsSend(ws, { t: "pong" });   // liveness only (updates _lastMsgAt above)
     }
   }
 
@@ -139,7 +149,25 @@ export class Room {
       await this.save(); this.broadcast(); await this.publishLobby();
       return;
     }
-    if (this.room.status !== "playing") return;
+    if (this.room.status !== "playing") {
+      // Non-playing (waiting / between rounds) rooms:
+      //  - if nobody has sent anything for GHOST_MS (silent disconnects never
+      //    deliver a close frame), close the room and clear the listing;
+      //  - otherwise refresh the public listing so the directory TTL never
+      //    prunes a healthy room, and re-arm the keepalive.
+      if (this.room.status !== "closed") {
+        const lastAlive = Math.max(this._lastMsgAt || 0, this._wokeAt || 0);
+        if (Date.now() - lastAlive > GHOST_MS) {
+          this.room.status = "closed";
+          for (const w of this.sockets.values()) wsSend(w, { t: "kicked", reason: "Room closed — connection lost." });
+          await this.save(); await this.publishLobby();
+          return;
+        }
+        await this.publishLobby();
+        if (RC.lobbyMeta(this.room)) await this.state.storage.setAlarm(Date.now() + LIST_PING_MS);
+      }
+      return;
+    }
     const now = Date.now();
     if (this.room.turnDeadline && now < this.room.turnDeadline - 250) { await this.state.storage.setAlarm(this.room.turnDeadline); return; }
     const m = this.room.match;
@@ -180,6 +208,11 @@ export class Room {
       if (meta) await this.lobby.fetch("https://l/publish", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ meta }) });
       else await this.lobby.fetch("https://l/unpublish", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ roomId: this.room.roomId }) });
     } catch (e) { /* lobby optional */ }
+    // listed but not playing -> make sure the keepalive/reaper alarm is armed
+    if (meta && this.room.status !== "playing") {
+      const cur = await this.state.storage.getAlarm();
+      if (cur == null) await this.state.storage.setAlarm(Date.now() + LIST_PING_MS);
+    }
   }
 
   sendTo(token) { const ws = this.sockets.get(token); if (ws) wsSend(ws, { t: "state", view: RC.viewForToken(this.room, token) }); }

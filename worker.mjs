@@ -46,7 +46,15 @@ export default {
         const body = await request.json().catch(() => ({}));
         const roomId = up(body.roomId);
         if (!roomId) return cors(json({ error: "missing roomId" }, 400));
-        return cors(await roomStub(env, roomId).fetch(jsonRequest(url, "/" + action, body)));
+        const res = await roomStub(env, roomId).fetch(jsonRequest(url, "/" + action, body));
+        // self-healing directory: joining a dead room removes its stale listing
+        if (action === "join" && res.status === 404 && env.LOBBY) {
+          try {
+            await env.LOBBY.get(env.LOBBY.idFromName("global")).fetch("https://l/unpublish",
+              { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ roomId }) });
+          } catch (e) { /* best effort */ }
+        }
+        return cors(res);
       }
       if (action === "state") {
         const roomId = up(url.searchParams.get("room"));

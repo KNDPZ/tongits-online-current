@@ -417,6 +417,26 @@
   .wc-line .mention{color:var(--mint);font-weight:800;}
   .wc-line.me-mention{background:rgba(110,240,210,.1);border-radius:6px;padding:2px 5px;}
 
+  /* ---- social layer: room names, waiting dock, popovers, chat replies ---- */
+  .lb-room .info .rm-names{color:var(--txt-soft);font-size:12px;margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  #lbWaitPanel .lb-scroll{padding:0;}
+  #lbWaitPanel .modal{position:static;max-width:none;width:100%;max-height:none;box-shadow:none;background:transparent;border-radius:0;padding:16px;}
+  .wc-line.msg{cursor:pointer;border-radius:8px;padding:3px 6px;margin:0 0 6px;}
+  .wc-line.msg:hover{background:rgba(255,255,255,.05);}
+  .wc-line.reply-sel{outline:2px solid var(--good);background:rgba(62,207,142,.13)!important;}
+  .wc-quote{border-left:3px solid var(--mint);background:rgba(255,255,255,.06);border-radius:8px;padding:4px 9px;margin:2px 0 4px;font-size:12px;color:var(--txt-soft);}
+  .wc-quote b{color:var(--gold);}
+  .wc-line.sys{font-style:italic;font-size:12.5px;color:#8fd8c2;}
+  .wc-line.sys.err{color:#ff9d94;font-style:normal;font-weight:700;}
+  .wc-replybar{display:flex;align-items:center;gap:8px;margin:0 12px;padding:7px 10px;border-radius:10px;
+    background:rgba(62,207,142,.12);box-shadow:inset 0 0 0 1.5px rgba(62,207,142,.5);font-size:12px;color:var(--txt-soft);}
+  .wc-replybar b{color:var(--gold);}
+  .wc-replybar .txt{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  .wc-replybar button{flex:0 0 auto;padding:2px 9px;font-size:12px;}
+  .popmenu{position:fixed;z-index:300;display:flex;flex-direction:column;gap:6px;padding:8px;border-radius:14px;
+    background:linear-gradient(180deg,#124130,#0a2c1f);box-shadow:0 14px 40px rgba(0,0,0,.6),inset 0 0 0 1.5px rgba(246,183,60,.38);}
+  .popmenu button{text-align:left;}
+
   @media (max-width:900px){
     #lobby{overflow-y:auto;padding:calc(12px + var(--sat)) 12px calc(14px + var(--sab));gap:11px;}
     .lb-top{flex-direction:column;align-items:stretch;gap:10px;}
@@ -1392,6 +1412,8 @@
   </div>
   <div id="p-create" style="display:none">
     <h2>Create a room</h2>
+    <label>Room name <span style="text-transform:none;letter-spacing:0;font-weight:600">(optional · max 10 letters/numbers)</span></label>
+    <input id="roomNameInput" type="text" maxlength="10" placeholder="e.g. Barkada" autocomplete="off" />
     <label>Players</label>
     <div class="seg" id="capSeg"><button data-cap="3" class="sel">3 players</button><button data-cap="2">1v1</button></div>
     <label style="margin-top:14px"><input type="checkbox" id="privChk" style="width:auto;margin-right:6px">Private (need password to join by code)</label>
@@ -1432,6 +1454,21 @@
 
 <!-- how to play -->
 <!-- full-page global lobby (matchmaking + presence + world chat) -->
+<!-- join-request received (you're in a room, someone asked for a seat) -->
+<div class="scrim" id="reqScrim"><div class="modal">
+  <h2>🙋 Join request</h2>
+  <p id="reqTxt"></p>
+  <div class="modal-actions"><button class="ghost" id="reqNo">Decline</button><button class="good" id="reqYes">Accept</button></div>
+</div></div>
+<!-- invite received (someone in a room invited you) -->
+<div class="scrim" id="invScrim"><div class="modal">
+  <h2>✉️ You're invited!</h2>
+  <p id="invTxt"></p>
+  <div class="modal-actions"><button class="ghost" id="invNo">Dismiss</button><button class="good" id="invYes">Join room</button></div>
+</div></div>
+<!-- floating popover for player rows and chat messages -->
+<div id="pPop" class="popmenu" style="display:none"></div>
+
 <div id="lobby" style="display:none" data-tab="tables">
   <div class="lb-top">
     <div class="lb-hi">
@@ -1458,7 +1495,13 @@
     <button data-tab="chat">World chat</button>
   </div>
   <div class="lb-grid">
-    <section class="lb-panel lb-tables">
+    <!-- your waiting room docks here (the #p-lobby modal is moved in/out) so you
+         keep the players list + world chat while waiting for opponents -->
+    <section class="lb-panel lb-tables" id="lbWaitPanel" style="display:none">
+      <div class="lb-panel-head">Your room</div>
+      <div class="lb-scroll" id="lbWaitHolder"><div class="modal" id="lbWaitModal"></div></div>
+    </section>
+    <section class="lb-panel lb-tables" id="lbTablesPanel">
       <div class="lb-panel-head">Open tables <a href="#" id="lbRefresh">refresh</a></div>
       <div class="lb-scroll" id="lbRooms"><div class="lb-empty">Looking for open tables…</div></div>
     </section>
@@ -1469,8 +1512,11 @@
     <section class="lb-panel lb-chat">
       <div class="lb-panel-head">World chat</div>
       <div class="lb-scroll" id="lbChat"></div>
+      <div class="wc-replybar" id="wcReplyBar" style="display:none">
+        <span class="txt" id="wcReplyTxt"></span><button class="ghost" id="wcReplyX" title="Cancel reply">✕</button>
+      </div>
       <div class="lb-chat-input">
-        <input id="lbChatInput" type="text" maxlength="240" placeholder="Message everyone… @name to mention" />
+        <input id="lbChatInput" type="text" maxlength="240" placeholder="Message everyone… @name to mention, or  @name /join" />
         <button id="lbChatSend">Send</button>
       </div>
     </section>
@@ -1623,10 +1669,12 @@ $("capSeg").querySelectorAll("button").forEach(b=>b.onclick=()=>{chosenCap=+b.da
 $("privChk").onchange=e=>$("pwWrap").style.display=e.target.checked?"":"none";
 $("createGo").onclick=async()=>{$("createErr").textContent="";const priv=$("privChk").checked;const pw=priv?$("pwInput").value:"";
   if(priv&&!pw){$("createErr").textContent="Set a password or uncheck private.";return;}
-  try{const r=await post("/api/create",{name:me.name,token:me.token,capacity:chosenCap,private:priv,password:pw});
+  const rn=$("roomNameInput").value.replace(/[^A-Za-z0-9 ]/g,"").replace(/\s+/g," ").trim().slice(0,10);
+  try{const r=await post("/api/create",{name:me.name,token:me.token,capacity:chosenCap,private:priv,password:pw,roomName:rn});
     if(r.error){$("createErr").textContent=r.error;return;}
     room={id:r.roomId,invite:r.invite,capacity:chosenCap,isHost:true};connectWS();
   }catch(e){$("createErr").textContent="Couldn't reach the server.";}};
+$("roomNameInput").addEventListener("input",()=>{const i=$("roomNameInput");const v=i.value.replace(/[^A-Za-z0-9 ]/g,"");if(v!==i.value)i.value=v;});
 $("joinGo").onclick=()=>{const code=$("joinCode").value.trim().toUpperCase().replace(/[^A-Z0-9]/g,"");if(!code){$("joinErr").textContent="Enter a room code.";return;}doJoin(code,$("joinPw").value,"");};
 async function doJoin(code,password,invite){
   try{const r=await post("/api/join",{roomId:code,token:me.token,name:me.name,password,invite});
@@ -1663,7 +1711,9 @@ function renderRooms(rooms){
   el.innerHTML="";
   rooms.forEach(rm=>{const type=rm.type||(rm.capacity===2?"1v1":"1v2");const seated=rm.players!=null?rm.players:(rm.capacity-rm.open);
     const d=document.createElement("div");d.className="lb-room";
-    d.innerHTML=`<div class="badge">${type==="1v1"?"1·1":"1·2"}</div><div class="info"><b>${type} table</b><div>${rm.open} open seat${rm.open===1?"":"s"} · ${seated} seated${rm.inProgress?" · in play":""}</div></div>`;
+    const names=(rm.names&&rm.names.length)?rm.names.map(n=>esc(n)).join(", "):"";
+    const title=rm.title?esc(rm.title):type+" table";
+    d.innerHTML=`<div class="badge">${type==="1v1"?"1·1":"1·2"}</div><div class="info"><b>${title}</b>${names?`<div class="rm-names">👥 ${names}</div>`:""}<div>${rm.title?type+" · ":""}${rm.open} open seat${rm.open===1?"":"s"} · ${seated} seated${rm.inProgress?" · in play":""}</div></div>`;
     const j=document.createElement("button");j.className="info";j.textContent="Join";j.onclick=()=>doJoin(rm.roomId,"","");
     d.appendChild(j);el.appendChild(d);});
 }
@@ -1679,19 +1729,29 @@ function hubUrl(){return (location.protocol==="https:"?"wss://":"ws://")+locatio
 function connectHub(){
   if(hub&&(hub.readyState===0||hub.readyState===1))return;
   try{hub=new WebSocket(hubUrl());}catch(e){return;}
-  hub.onopen=()=>{hubLastSent=hubStatusVal;hubSend({t:"hello",name:me.name,token:me.token,status:hubStatusVal});};
+  hub.onopen=()=>{hubLastSent=hubSig();hubSend({t:"hello",name:me.name,token:me.token,status:hubStatusVal,...hubCtx});};
   hub.onmessage=e=>{let d;try{d=JSON.parse(e.data);}catch(_){return;}onHub(d);};
   hub.onclose=()=>{hub=null;clearTimeout(hubTimer);if(me.name)hubTimer=setTimeout(connectHub,2500);};
   hub.onerror=()=>{};
 }
 function hubSend(o){try{if(hub&&hub.readyState===1)hub.send(JSON.stringify(o));}catch(e){}}
-function hubStatus(s){hubStatusVal=s;if(hub&&hub.readyState===1&&hubLastSent!==s){hubLastSent=s;hubSend({t:"status",status:s});}}
+let hubCtx={};
+function hubSig(){return JSON.stringify([hubStatusVal,hubCtx.roomId||"",hubCtx.open|0,hubCtx.cap|0,!!hubCtx.priv]);}
+function hubStatus(s,ctx){hubStatusVal=s;hubCtx=ctx||{};const sig=hubSig();
+  if(hub&&hub.readyState===1&&hubLastSent!==sig){hubLastSent=sig;hubSend({t:"status",status:s,...hubCtx});}}
 function onHub(d){
   if(d.t==="nameTaken"){try{hub.onclose=null;hub.close();}catch(e){}hub=null;$("lobby").style.display="none";me.name="";showPre("p-name");$("nameInput").value="";$("nameErr").textContent="That name is taken — pick another.";setTimeout(()=>$("nameInput").focus(),40);return;}
   if(d.t==="welcome"){renderLbName();return;}
   if(d.t==="presence"){onlineUsers=d.users||[];renderPlayers();return;}
   if(d.t==="chatHistory"){wcLines=d.lines||[];renderWorldChat(false);return;}
   if(d.t==="chat"){wcLines.push(d.line);if(wcLines.length>120)wcLines.shift();renderWorldChat(true);maybeBell(d.line);return;}
+  if(d.t==="sys"){wcSys(d.text||"",d.style==="err"?"err":"info");return;}
+  if(d.t==="joinreq"){showJoinReq(d.from);return;}
+  if(d.t==="joinres"){
+    if(d.ok){wcSys("@"+d.from+" accepted your request — joining their room…","info");leaveThenJoin(d.roomId,d.invite||"");}
+    else wcSys("@"+d.from+" declined your join request.","err");
+    return;}
+  if(d.t==="invite"){showInvite(d);return;}
   if(d.t==="rooms"){renderRooms(d.rooms||[]);return;}
 }
 function nameEq(a,b){return (a||"").trim().toLowerCase()===(b||"").trim().toLowerCase();}
@@ -1703,7 +1763,7 @@ function renderPlayers(){
   onlineUsers.forEach(u=>{const isMe=nameEq(u.name,me.name);const st=u.status==="playing"?"playing":"lobby";
     const d=document.createElement("div");d.className="lb-player"+(isMe?" me":"");
     d.innerHTML=`<span class="dot ${st}"></span><span class="nm">${esc(u.name)}${isMe?" (you)":""}</span><span class="st ${st}">${st}</span>`;
-    if(!isMe)d.onclick=()=>insertMention(u.name);
+    if(!isMe)d.onclick=ev=>openPlayerPop(ev,u);
     el.appendChild(d);});
 }
 const WC_TTL_MS=15*60*1000; // messages vanish 15 min after they're sent
@@ -1712,17 +1772,33 @@ function fmtChat(text){return esc(text).replace(/@([A-Za-z0-9]+(?:\s[A-Za-z0-9]+
 function renderWorldChat(scroll){
   const el=$("lbChat");if(!el)return;
   const prevTop=el.scrollTop;
-  el.innerHTML=wcVisible().map(l=>{const mine=l.name!==me.name&&textMentions(l.text,me.name);
-    return `<div class="wc-line${mine?" me-mention":""}"><span class="who">${esc(l.name)}:</span> ${fmtChat(l.text)}</div>`;}).join("");
+  const vis=wcVisible();
+  el.innerHTML=vis.map(l=>{
+    if(l.sys)return `<div class="wc-line sys ${l.style==="err"?"err":""}">${esc(l.text)}</div>`;
+    const mine=l.name!==me.name&&textMentions(l.text,me.name);
+    const sel=replyTarget&&l.id&&l.id===replyTarget.id;
+    const quote=l.reply?`<div class="wc-quote"><b>${esc(l.reply.name)}</b> ${fmtChat(l.reply.text)}</div>`:"";
+    return `<div class="wc-line msg${mine?" me-mention":""}${sel?" reply-sel":""}">${quote}<span class="who">${esc(l.name)}:</span> ${fmtChat(l.text)}</div>`;
+  }).join("");
+  [...el.children].forEach((n,i)=>{const l=vis[i];if(l&&!l.sys)n.onclick=ev=>openMsgPop(ev,l);});
   if(scroll!==false)el.scrollTop=el.scrollHeight;else el.scrollTop=prevTop;
 }
 setInterval(()=>{const cutoff=Date.now()-WC_TTL_MS;const before=wcLines.length;wcLines=wcLines.filter(l=>!l.at||l.at>cutoff);
   if(wcLines.length!==before&&$("lobby")&&$("lobby").style.display!=="none")renderWorldChat(false);},20000);
 function insertMention(name){const inp=$("lbChatInput");if(!inp)return;const cur=inp.value.replace(/\s*$/,"");inp.value=(cur?cur+" ":"")+"@"+name+" ";inp.focus();}
-function sendWorld(){const inp=$("lbChatInput");if(!inp)return;const t=inp.value.trim();if(!t)return;hubSend({t:"chat",text:t});inp.value="";}
+function sendWorld(){const inp=$("lbChatInput");if(!inp)return;const t=inp.value.trim();if(!t)return;
+  // "@name /join" (or "/join @name") = ask that player for a seat in their room
+  if(/\/join\b/i.test(t)){
+    const mm=t.match(/@([A-Za-z0-9]+(?:\s[A-Za-z0-9]+)?)/);
+    if(!mm){wcSys("To ask for a seat, mention the player — e.g.  @maria /join","err");return;}
+    if(view){wcSys("You're already in a room — leave it first to join another.","err");return;}
+    hubSend({t:"joinreq",to:mm[1].trim()});inp.value="";return;
+  }
+  const msg={t:"chat",text:t};if(replyTarget&&replyTarget.id)msg.replyTo=replyTarget.id;
+  hubSend(msg);inp.value="";clearReply();}
 $("lbChatSend").onclick=sendWorld;
 $("lbChatInput").addEventListener("keydown",e=>{if(e.key==="Enter")sendWorld();});
-function maybeBell(line){if(!line||nameEq(line.name,me.name))return;if(hubStatusVal==="playing")return;if(textMentions(line.text,me.name))playBell();}
+function maybeBell(line){if(!line||nameEq(line.name,me.name))return;if(document.body.classList.contains("in-game"))return;if(textMentions(line.text,me.name))playBell();}
 function playBell(){try{const AC=window.AudioContext||window.webkitAudioContext;if(!AC)return;const ctx=new AC();const now=ctx.currentTime;[880,1320].forEach((f,i)=>{const o=ctx.createOscillator(),g=ctx.createGain();o.type="sine";o.frequency.value=f;o.connect(g);g.connect(ctx.destination);const s=now+i*0.16;g.gain.setValueAtTime(0.0001,s);g.gain.exponentialRampToValueAtTime(0.25,s+0.02);g.gain.exponentialRampToValueAtTime(0.0001,s+0.32);o.start(s);o.stop(s+0.34);});}catch(e){}}
 
 /* ---------- networking ---------- */
@@ -1840,9 +1916,9 @@ function removeFromModel(id){groups=groups.map(g=>g.filter(x=>x!==id)).filter(g=
 /* ---------- render ---------- */
 function render(){
   if(!view){document.body.classList.remove("in-game");return;}
-  $("lobby").style.display="none";           // in a room now — hide the global lobby
-  if(typeof hubStatus==="function")hubStatus("playing");
+  if(typeof hubStatus==="function")hubStatus("playing",roomCtxNow());   // presence carries room context
   if(view.type==="lobby"){document.body.classList.remove("in-game");renderLobby(view);return;}
+  $("lobby").style.display="none";undockWait();   // playing now — hide the global lobby
   document.body.classList.add("in-game");
   // A new deal just started (previous round was over, this one isn't):
   // wipe last round's local arrangement so old groups can't carry over —
@@ -1854,7 +1930,12 @@ function render(){
 }
 let _prevRoundOver=false;
 function renderLobby(v){
-  showPre("p-lobby");stopTimer();
+  room.priv=!!v.isPrivate;if(v.capacity)room.capacity=v.capacity;
+  const wrh=document.querySelector("#p-lobby h2");
+  if(wrh)wrh.textContent=v.roomName?("Waiting room · "+v.roomName):"Waiting room";
+  const wph=document.querySelector("#lbWaitPanel .lb-panel-head");
+  if(wph)wph.textContent=v.roomName?("Your room · "+v.roomName):"Your room";
+  dockWait();stopTimer();
   ["hRoom","hPot","hMoney","leaveBtn","skinBtn"].forEach(id=>$(id).style.display="none");
   $("lobbyCode").textContent=v.roomId;room.isHost=v.youAreHost;if(v.invite)room.invite=v.invite;
   if(room.isHost&&room.invite){$("inviteWrap").style.display="";$("inviteLink").value=`${location.origin}/?room=${v.roomId}&invite=${room.invite}`;}
@@ -2296,7 +2377,7 @@ renderOver=function(v){
   else if(!_overSeen){_overSeen=true;try{_recordRound(v);}catch(e){}}
   return _renderOver(v);};
 const _enterLobby=enterLobby;
-enterLobby=function(){_enterLobby();renderStats();_lastTurnIdx=null;_overSeen=false;};
+enterLobby=function(){_enterLobby();renderStats();undockWait();_lastTurnIdx=null;_overSeen=false;};
 renderStats();
 
 /* ---- sort your hand (client-side ordering only) ---- */
@@ -2321,6 +2402,135 @@ if(_lbTabs)_lbTabs.querySelectorAll("button").forEach(b=>{
     $("lobby").dataset.tab=b.dataset.tab;
   };
 });
+
+
+/* ============================================================
+   Social layer — waiting-room dock, player popovers, join
+   requests (@name /join), invites, and chat replies.
+   ============================================================ */
+
+/* ---- room context reported to the hub with presence ---- */
+function roomCtxNow(){
+  if(!view)return{};
+  if(view.type==="lobby"){
+    const open=(view.seats||[]).filter(s=>s&&s.empty).length;
+    return{roomId:room.id,open,cap:view.capacity||room.capacity||3,priv:!!view.isPrivate};
+  }
+  const cap=room.capacity||3;
+  const seated=(view.players||[]).length||cap;
+  return{roomId:room.id,open:Math.max(0,cap-seated),cap,priv:!!room.priv};
+}
+
+/* ---- waiting room docked inside the lobby page ----
+   The #p-lobby modal node is MOVED into the lobby grid while waiting
+   (so world chat + player list stay visible) and moved back when done. */
+const _waitSec=$("p-lobby");                                  // the waiting-room section
+const _preModal=document.querySelector("#preScrim > .modal");  // its original home
+function dockWait(){
+  if(_waitSec&&_waitSec.parentElement!==$("lbWaitModal"))$("lbWaitModal").appendChild(_waitSec);
+  if(_waitSec)_waitSec.style.display="";
+  $("lbWaitPanel").style.display="";
+  $("lbTablesPanel").style.display="none";
+  ["lbCreate","lbJoin"].forEach(id=>{const b=$(id);if(b)b.style.display="none";});
+  hidePre();$("lobby").style.display="flex";
+  const tb=document.querySelector('#lbTabs button[data-tab="tables"]');if(tb)tb.textContent="Your room";
+}
+function undockWait(){
+  if(_waitSec&&_preModal&&_waitSec.parentElement!==_preModal){_preModal.appendChild(_waitSec);_waitSec.style.display="none";}
+  const p=$("lbWaitPanel");if(p)p.style.display="none";
+  const tp=$("lbTablesPanel");if(tp)tp.style.display="";
+  ["lbCreate","lbJoin"].forEach(id=>{const b=$(id);if(b)b.style.display="";});
+  const tb=document.querySelector('#lbTabs button[data-tab="tables"]');if(tb)tb.textContent="Tables";
+}
+
+/* ---- local system lines in world chat ---- */
+function wcSys(text,style){
+  wcLines.push({sys:true,style:style||"info",text,at:Date.now()});
+  if(wcLines.length>120)wcLines.shift();
+  renderWorldChat(true);
+  if(style==="err")toast(text);
+}
+
+/* ---- floating popover (player rows + chat messages) ---- */
+function hidePop(){const p=$("pPop");if(p)p.style.display="none";}
+function showPop(x,y,items){
+  const p=$("pPop");p.innerHTML="";
+  items.forEach(it=>{const b=document.createElement("button");b.className="ghost small";b.textContent=it.label;
+    b.onclick=e=>{e.stopPropagation();hidePop();it.fn();};p.appendChild(b);});
+  p.style.display="flex";p.style.visibility="hidden";p.style.left="0px";p.style.top="0px";
+  requestAnimationFrame(()=>{const r=p.getBoundingClientRect();
+    p.style.left=Math.max(6,Math.min(x,innerWidth-r.width-10))+"px";
+    p.style.top=Math.max(6,Math.min(y,innerHeight-r.height-10))+"px";
+    p.style.visibility="visible";});
+}
+window.addEventListener("pointerdown",e=>{const p=$("pPop");if(p&&p.style.display!=="none"&&!p.contains(e.target))hidePop();},true);
+window.addEventListener("keydown",e=>{if(e.key==="Escape"){hidePop();clearReply();}});
+
+function openPlayerPop(ev,u){
+  ev.stopPropagation();
+  const items=[{label:"💬 Mention @"+u.name,fn:()=>insertMention(u.name)}];
+  const waiting=view&&view.type==="lobby";
+  if(!view&&u.status==="playing")items.push({label:"🙋 Request to join their room",fn:()=>hubSend({t:"joinreq",to:u.name})});
+  if(waiting)items.push({label:"✉️ Invite to your room",fn:()=>hubSend({t:"invite",to:u.name,invite:room.invite||""})});
+  showPop(ev.clientX,ev.clientY,items);
+}
+function openMsgPop(ev,l){
+  ev.stopPropagation();
+  const items=[{label:"↩ Reply",fn:()=>setReply(l)}];
+  if(!nameEq(l.name,me.name))items.push({label:"💬 Mention @"+l.name,fn:()=>insertMention(l.name)});
+  showPop(ev.clientX,ev.clientY,items);
+}
+
+/* ---- reply-to-message (WhatsApp-style quote) ---- */
+let replyTarget=null;
+function setReply(l){
+  replyTarget={id:l.id,name:l.name,text:l.text};
+  const bar=$("wcReplyBar");if(bar){bar.style.display="flex";
+    $("wcReplyTxt").innerHTML=`Replying to <b>${esc(l.name)}</b>: ${esc((l.text||"").slice(0,60))}${(l.text||"").length>60?"…":""}`;}
+  renderWorldChat(false);
+  const inp=$("lbChatInput");if(inp)inp.focus();
+}
+function clearReply(){
+  if(!replyTarget)return;
+  replyTarget=null;
+  const bar=$("wcReplyBar");if(bar)bar.style.display="none";
+  renderWorldChat(false);
+}
+if($("wcReplyX"))$("wcReplyX").onclick=clearReply;
+
+/* ---- join requests + invites ---- */
+let pendingReq=null,pendingInv=null;
+function showJoinReq(from){
+  pendingReq=from;
+  $("reqTxt").innerHTML=`<b>@${esc(from)}</b> wants to join your room. There's a seat for them — accept?`;
+  $("reqScrim").classList.add("show");
+  playBell();buzz([16,50,16]);
+}
+$("reqYes").onclick=()=>{$("reqScrim").classList.remove("show");
+  if(pendingReq)hubSend({t:"joinres",to:pendingReq,ok:true,roomId:room.id,invite:room.invite||""});pendingReq=null;};
+$("reqNo").onclick=()=>{$("reqScrim").classList.remove("show");
+  if(pendingReq)hubSend({t:"joinres",to:pendingReq,ok:false});pendingReq=null;};
+
+function showInvite(d){
+  pendingInv=d;
+  const mode=d.cap===2?"1v1":"3-player";
+  $("invTxt").innerHTML=`You are invited by <b>@${esc(d.from)}</b> to play a <b>${mode}</b> game in room <b>${esc(d.roomId||"")}</b> <span class="pill g">${d.priv?"private":"public"}</span>`;
+  $("invScrim").classList.add("show");
+  playBell();buzz([16,50,16]);
+}
+$("invYes").onclick=()=>{$("invScrim").classList.remove("show");const d=pendingInv;pendingInv=null;
+  if(d)leaveThenJoin(d.roomId,d.invite||"");};
+$("invNo").onclick=()=>{$("invScrim").classList.remove("show");pendingInv=null;};
+
+function leaveThenJoin(roomId,invite){
+  if(!roomId)return;
+  if(room.id===roomId)return;                       // already there
+  if(view&&room.id){try{send({t:"leave"});}catch(e){}}  // free the old seat first
+  doJoin(roomId,"",invite);
+}
+
+/* keepalive: lets the server tell a healthy idle room from a ghost one */
+setInterval(()=>{try{if(ws&&ws.readyState===1&&view)send({t:"ping"});}catch(e){}},25000);
 
 boot();
 </script>
